@@ -169,43 +169,65 @@ func fp2MulXi(a *Fp2) *Fp2 {
 // twistB is the curve constant of the sextic twist: 4(u + 1).
 var twistB = newFp2(big.NewInt(4), big.NewInt(4))
 
-// Precomputed exponents and constants for the Fp2 square root. Computing these
-// per call cost more than the square root itself.
-var (
-	// sqrtExpFp2 = (p^2 + 7) / 16, which yields a root when one exists.
-	sqrtExpFp2 = func() *big.Int {
-		e := new(big.Int).Mul(P, P)
-		e.Add(e, big.NewInt(7))
-		return e.Rsh(e, 4)
-	}()
-	// sqrtAdjustments are the fourth roots of unity the candidate may need to
-	// be multiplied by. One of them lands on a true root exactly when a is a
-	// square.
-	sqrtAdjustments = func() []*Fp2 {
-		p2 := new(big.Int).Mul(P, P)
-		quarter := new(big.Int).Rsh(new(big.Int).Sub(p2, bigOne), 2)
-		return []*Fp2{
-			fp2One(),
-			newFp2(new(big.Int), big.NewInt(1)), // u
-			fp2Exp(newFp2(big.NewInt(1), big.NewInt(1)), quarter),
-			fp2Exp(newFp2(new(big.Int), big.NewInt(1)), quarter),
-		}
-	}()
-)
+// sqrtExpFp is (p+1)/4, which gives square roots in the base field because
+// p ≡ 3 (mod 4).
+var sqrtExpFp = new(big.Int).Rsh(new(big.Int).Add(P, bigOne), 2)
+
+// fpSqrtBase returns a square root in Fp, or nil when none exists.
+func fpSqrtBase(a *big.Int) *big.Int {
+	candidate := new(big.Int).Exp(a, sqrtExpFp, P)
+	if fpMul(candidate, candidate).Cmp(new(big.Int).Mod(a, P)) != 0 {
+		return nil
+	}
+	return candidate
+}
 
 // fp2Sqrt returns a square root of a, or nil when none exists.
 //
-// p ≡ 3 (mod 4), so a^((p^2+7)/16) is a root up to a fourth root of unity.
-// Trying the four adjustments is cheaper than a separate Legendre test: if none
-// of them squares back to a, then a was not a square, and the test would have
-// told us the same thing at the cost of another full exponentiation.
+// This is the complex method, which works whenever p ≡ 3 (mod 4): it reduces
+// the problem to two square roots in the base field. Exponentiating in Fp2
+// directly would need an exponent twice as long over elements three times as
+// expensive to multiply, and getting the adjustment by roots of unity right is
+// fiddly enough to fail silently on some inputs — which shows up not as a wrong
+// answer but as a hash-to-curve loop that retries far more often than it should.
 func fp2Sqrt(a *Fp2) *Fp2 {
 	if a.IsZero() {
 		return fp2Zero()
 	}
-	root := fp2Exp(a, sqrtExpFp2)
-	for _, adjustment := range sqrtAdjustments {
-		candidate := fp2Mul(root, adjustment)
+
+	// A purely real or purely imaginary element is a special case: with a1 = 0
+	// the general formula divides by zero.
+	if fpIsZero(a.C1) {
+		if root := fpSqrtBase(a.C0); root != nil {
+			return newFp2(root, new(big.Int))
+		}
+		// a0 is not a square, but -a0 might be; then sqrt(a) = sqrt(-a0)*u,
+		// since u^2 = -1.
+		if root := fpSqrtBase(fpNeg(a.C0)); root != nil {
+			return newFp2(new(big.Int), root)
+		}
+		return nil
+	}
+
+	// norm = a0^2 + a1^2 must be a square in Fp for a to be a square in Fp2.
+	norm := fpAdd(fpMul(a.C0, a.C0), fpMul(a.C1, a.C1))
+	alpha := fpSqrtBase(norm)
+	if alpha == nil {
+		return nil
+	}
+
+	inv2 := fpInv(bigTwo)
+	// One of (a0 ± alpha)/2 is a square; try both.
+	for _, delta := range []*big.Int{
+		fpMul(fpAdd(a.C0, alpha), inv2),
+		fpMul(fpSub(a.C0, alpha), inv2),
+	} {
+		x0 := fpSqrtBase(delta)
+		if x0 == nil || fpIsZero(x0) {
+			continue
+		}
+		x1 := fpMul(a.C1, fpInv(fpMul(bigTwo, x0)))
+		candidate := newFp2(x0, x1)
 		if fp2Square(candidate).Equal(a) {
 			return candidate
 		}
