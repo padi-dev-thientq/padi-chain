@@ -2,12 +2,10 @@ package evm
 
 import (
 	"errors"
-	"fmt"
 	"math/big"
 
 	"layer1/common"
 	"layer1/core"
-	"layer1/rlp"
 	"layer1/uint256"
 )
 
@@ -360,11 +358,7 @@ func (evm *EVM) create(caller ContractRef, code []byte, gas uint64, value *big.I
 
 // CreateAddress derives the address of a contract created by sender at nonce.
 func CreateAddress(sender common.Address, nonce uint64) common.Address {
-	enc, err := rlp.Encode([]any{sender, nonce})
-	if err != nil {
-		panic(fmt.Sprintf("evm: encoding creation address: %v", err))
-	}
-	return common.BytesToAddress(common.Keccak256(enc).Bytes()[12:])
+	return core.CreateContractAddress(sender, nonce)
 }
 
 // CreateAddress2 derives a CREATE2 address, which depends only on the sender,

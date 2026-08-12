@@ -116,7 +116,11 @@ func (rs Receipts) Bloom() Bloom {
 
 // DeriveFields fills in the receipt fields that are not part of consensus but
 // are needed to answer RPC queries.
-func (rs Receipts) DeriveFields(blockHash common.Hash, number uint64, baseFee *big.Int, txs Transactions) error {
+//
+// These fields are deliberately not stored: every one of them can be recomputed
+// from the block and its transactions, so persisting them would be redundant
+// state that could drift out of agreement with the chain.
+func (rs Receipts) DeriveFields(signer *Signer, blockHash common.Hash, number uint64, baseFee *big.Int, txs Transactions) error {
 	if len(rs) != len(txs) {
 		return fmt.Errorf("core: %d receipts for %d transactions", len(rs), len(txs))
 	}
@@ -129,6 +133,15 @@ func (rs Receipts) DeriveFields(blockHash common.Hash, number uint64, baseFee *b
 		r.BlockNumber = new(big.Int).SetUint64(number)
 		r.TxIndex = uint(i)
 		r.EffectiveGasPrice = tx.EffectiveGasPrice(baseFee)
+
+		// A creation's contract address follows from the sender and the nonce.
+		if tx.IsContractCreation() && signer != nil {
+			from, err := signer.Sender(tx)
+			if err != nil {
+				return fmt.Errorf("core: receipt %d: %w", i, err)
+			}
+			r.ContractAddress = CreateContractAddress(from, tx.Nonce())
+		}
 
 		// Gas used by this transaction alone is the delta in the running total.
 		if i == 0 {

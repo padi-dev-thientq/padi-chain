@@ -376,7 +376,7 @@ func TestReceiptDeriveFields(t *testing.T) {
 		NewReceipt(LegacyTxType, ReceiptStatusSuccessful, 45000, []*Log{{Address: common.Address{2}}}),
 	}
 	blockHash := common.Keccak256([]byte("block"))
-	if err := receipts.DeriveFields(blockHash, 9, big.NewInt(1), txs); err != nil {
+	if err := receipts.DeriveFields(signer, blockHash, 9, big.NewInt(1), txs); err != nil {
 		t.Fatal(err)
 	}
 	if receipts[0].GasUsed != 21000 {
@@ -392,7 +392,7 @@ func TestReceiptDeriveFields(t *testing.T) {
 	if receipts[0].TxHash != txs[0].Hash() || receipts[0].BlockHash != blockHash {
 		t.Error("receipt context fields were not filled in")
 	}
-	if err := receipts.DeriveFields(blockHash, 9, big.NewInt(1), txs[:1]); err == nil {
+	if err := receipts.DeriveFields(signer, blockHash, 9, big.NewInt(1), txs[:1]); err == nil {
 		t.Error("a receipt/transaction count mismatch must be an error")
 	}
 }

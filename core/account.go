@@ -55,6 +55,16 @@ func (a *Account) IsEmpty() bool {
 	return a.Nonce == 0 && a.Balance.Sign() == 0 && !a.HasCode()
 }
 
+// CreateContractAddress derives the address of a contract created by sender at
+// the given nonce: the low 20 bytes of keccak256(rlp([sender, nonce])).
+func CreateContractAddress(sender common.Address, nonce uint64) common.Address {
+	enc, err := rlp.Encode([]any{sender, nonce})
+	if err != nil {
+		panic(fmt.Sprintf("core: encoding creation address: %v", err))
+	}
+	return common.BytesToAddress(common.Keccak256(enc).Bytes()[12:])
+}
+
 // Encode serializes the account for storage in the state trie.
 func (a *Account) Encode() ([]byte, error) { return rlp.Encode(a) }
 

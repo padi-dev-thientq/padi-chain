@@ -208,7 +208,7 @@ func (bc *BlockChain) GetReceipts(hash common.Hash) core.Receipts {
 	block := bc.GetBlockByHash(hash)
 	if block != nil {
 		// Fill in the fields that are derived rather than stored.
-		receipts.DeriveFields(hash, block.NumberU64(), block.BaseFee(), block.Transactions())
+		receipts.DeriveFields(bc.processor.Signer(), hash, block.NumberU64(), block.BaseFee(), block.Transactions())
 	}
 	return receipts
 }
