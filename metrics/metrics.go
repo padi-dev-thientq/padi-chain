@@ -212,6 +212,7 @@ type NodeMetrics struct {
 	PrunedNodes      *Counter
 	CompactionRuns   *Counter
 	StateNodesSynced *Counter
+	SlashingReports  *Counter
 
 	ChainHead      *Gauge
 	ChainFinalized *Gauge
@@ -244,6 +245,7 @@ func NewNodeMetrics() *NodeMetrics {
 		PrunedNodes:      r.Counter("layer1_pruned_nodes_total", "Trie nodes and code entries removed by pruning."),
 		CompactionRuns:   r.Counter("layer1_compaction_runs_total", "Completed store compactions."),
 		StateNodesSynced: r.Counter("layer1_state_nodes_synced_total", "State nodes downloaded during snapshot sync."),
+		SlashingReports:  r.Counter("layer1_slashing_reports_total", "Equivocation proofs submitted for slashing."),
 
 		ChainHead:      r.Gauge("layer1_chain_head", "Height of the canonical head."),
 		ChainFinalized: r.Gauge("layer1_chain_finalized", "Height of the highest finalized block."),

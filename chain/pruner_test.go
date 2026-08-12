@@ -17,9 +17,32 @@ import (
 	"layer1/trie"
 )
 
-// newPruneTestChain builds a chain whose clock runs ahead of itself, so a test
-// can mine far more blocks than the block period would allow in real time.
+// testClock lets a test drive consensus time explicitly. The clock must be
+// steady within a single block build: if it advanced on every read, the open
+// round would shift mid-build and the proposer would change underneath the
+// builder.
+type testClock struct{ offset atomic.Int64 }
+
+// advance moves the clock forward by one block period.
+func (c *testClock) advance() { c.offset.Add(1) }
+
+// newPruneTestChain builds a chain whose clock a test drives, so it can mine
+// far more blocks than the block period would allow in real time.
 func newPruneTestChain(t *testing.T, keys []*secp256k1.PrivateKey, addrs []common.Address) (*chain.BlockChain, *consensus.PoA) {
+	bc, engine, clock := newControlledChain(t, keys, addrs)
+	// Tests that do not drive the clock themselves get one that keeps pace
+	// with the blocks they mine.
+	go func() {
+		for i := 0; i < 100000; i++ {
+			clock.advance()
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	return bc, engine
+}
+
+// newControlledChain builds a chain and hands back the clock driving it.
+func newControlledChain(t *testing.T, keys []*secp256k1.PrivateKey, addrs []common.Address) (*chain.BlockChain, *consensus.PoA, *testClock) {
 	t.Helper()
 
 	genesis := chain.DefaultGenesis(chainID, addrs[:1])
@@ -31,16 +54,17 @@ func newPruneTestChain(t *testing.T, keys []*secp256k1.PrivateKey, addrs []commo
 	if err != nil {
 		t.Fatal(err)
 	}
-	var tick atomic.Int64
+	clock := new(testClock)
+	base := time.Now().Add(time.Hour)
 	engine.SetClock(func() time.Time {
-		return time.Now().Add(time.Hour + time.Duration(tick.Add(1))*time.Second)
+		return base.Add(time.Duration(clock.offset.Load()) * time.Second)
 	})
 
 	bc, err := chain.NewBlockChain(db.NewMemoryDB(), genesis, engine)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return bc, engine
+	return bc, engine, clock
 }
 
 // countKeys returns how many records the store holds under a prefix.

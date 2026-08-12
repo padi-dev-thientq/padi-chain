@@ -66,6 +66,7 @@ func RegisterAll(s *Server, backend Backend) {
 
 	s.Register("txpool_status", api.txpoolStatus)
 	s.Register("layer1_validators", api.validators)
+	s.Register("layer1_validatorInfo", api.validatorInfo)
 	s.Register("layer1_nodeInfo", api.nodeInfo)
 }
 
@@ -664,10 +665,39 @@ func (a *API) txpoolStatus(params []json.RawMessage) (any, error) {
 
 func (a *API) validators(params []json.RawMessage) (any, error) {
 	out := []string{}
-	for _, addr := range a.backend.Chain().Engine().Validators() {
+	for _, addr := range a.backend.Chain().Validators() {
 		out = append(out, addr.Hex())
 	}
 	return out, nil
+}
+
+// validatorInfo reports a validator's stake and position in its lifecycle. It
+// reads the registry, which is ordinary account storage, so the same answer is
+// available to anyone with a Merkle proof of the state root.
+func (a *API) validatorInfo(params []json.RawMessage) (any, error) {
+	addr, err := decodeAddress(params, 0)
+	if err != nil {
+		return nil, err
+	}
+	registry, err := a.backend.Chain().StakingRegistry()
+	if err != nil {
+		return nil, NewError(CodeInternalError, "%v", err)
+	}
+	v, err := registry.ByAddress(addr)
+	if err != nil {
+		return nil, nil // not a validator
+	}
+	return map[string]any{
+		"address":           v.Address.Hex(),
+		"withdrawalAddress": v.WithdrawalAddress.Hex(),
+		"status":            v.Status.String(),
+		"balance":           common.EncodeHexBig(v.Balance),
+		"effectiveBalance":  common.EncodeHexBig(v.EffectiveBalance),
+		"index":             common.EncodeHexUint(v.Index),
+		"activationEpoch":   common.EncodeHexUint(v.ActivationEpoch),
+		"exitEpoch":         common.EncodeHexUint(v.ExitEpoch),
+		"withdrawableEpoch": common.EncodeHexUint(v.WithdrawableEpoch),
+	}, nil
 }
 
 func (a *API) nodeInfo(params []json.RawMessage) (any, error) {

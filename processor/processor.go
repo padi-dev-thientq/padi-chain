@@ -63,7 +63,10 @@ func (p *Processor) Config() *Config { return p.config }
 // Process executes every transaction in a block against statedb and returns
 // the receipts, the logs and the total gas used. It does not commit: the caller
 // decides whether the resulting state is accepted.
-func (p *Processor) Process(block *core.Block, statedb *state.StateDB) (core.Receipts, []*core.Log, uint64, error) {
+// The finalized height is passed in rather than read back from the chain: the
+// caller already holds the chain lock while executing a block, and reaching
+// back through it would deadlock.
+func (p *Processor) Process(block *core.Block, statedb *state.StateDB, finalizedNumber uint64) (core.Receipts, []*core.Log, uint64, error) {
 	var (
 		receipts     core.Receipts
 		logs         []*core.Log
@@ -83,6 +86,12 @@ func (p *Processor) Process(block *core.Block, statedb *state.StateDB) (core.Rec
 		}
 		receipts = append(receipts, receipt)
 		logs = append(logs, receipt.Logs...)
+	}
+
+	// The epoch transition runs after the block's transactions, so a deposit
+	// in the boundary block itself is visible to the activation queue.
+	if _, err := p.ProcessEpochBoundary(statedb, header, finalizedNumber); err != nil {
+		return nil, nil, 0, fmt.Errorf("processor: epoch transition at block %d: %w", block.NumberU64(), err)
 	}
 
 	if usedGas != block.GasUsed() {

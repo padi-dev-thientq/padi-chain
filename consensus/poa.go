@@ -66,7 +66,17 @@ type Engine interface {
 	Quorum() int
 }
 
-// PoA is a round-robin proof-of-authority engine.
+// ValidatorSetProvider supplies the validator set for a given height, read from
+// chain state. With one attached the engine becomes proof of stake: the set is
+// consensus state that deposits and exits change, rather than configuration.
+type ValidatorSetProvider interface {
+	// ValidatorsAt returns the set that governs the given block height.
+	ValidatorsAt(blockNumber uint64) ([]common.Address, error)
+}
+
+// PoA is a round-based engine over a validator set. The set is fixed at genesis
+// unless a ValidatorSetProvider is attached, in which case it is whatever the
+// staking registry says it is.
 type PoA struct {
 	validators []common.Address
 	period     uint64
@@ -76,6 +86,31 @@ type PoA struct {
 	roundTimeout uint64
 	// now is the clock, replaceable in tests.
 	now func() time.Time
+
+	// provider, when set, replaces the static set with one read from state.
+	provider ValidatorSetProvider
+}
+
+// SetValidatorProvider makes the validator set dynamic.
+func (p *PoA) SetValidatorProvider(provider ValidatorSetProvider) { p.provider = provider }
+
+// setFor returns the validator set governing a height, sorted so every node
+// derives the same rotation from the same set.
+func (p *PoA) setFor(blockNumber uint64) []common.Address {
+	if p.provider == nil {
+		return p.validators
+	}
+	set, err := p.provider.ValidatorsAt(blockNumber)
+	if err != nil || len(set) == 0 {
+		// A set that cannot be read is not an empty set. Falling back to the
+		// genesis validators keeps the chain verifiable rather than declaring
+		// every block invalid.
+		return p.validators
+	}
+	sorted := make([]common.Address, len(set))
+	copy(sorted, set)
+	sort.Slice(sorted, func(i, j int) bool { return string(sorted[i][:]) < string(sorted[j][:]) })
+	return sorted
 }
 
 // NewPoA builds an engine over a validator set. The set is sorted so every node
@@ -153,11 +188,33 @@ func (p *PoA) ProposerAt(number uint64) (common.Address, error) {
 // given round. Each round hands the turn to the next validator in the
 // rotation, so an unavailable proposer costs one round rather than the chain.
 func (p *PoA) ProposerAtRound(number, round uint64) (common.Address, error) {
-	if len(p.validators) == 0 {
+	set := p.setFor(number)
+	if len(set) == 0 {
 		return common.Address{}, ErrNoValidators
 	}
-	return p.validators[(number+round)%uint64(len(p.validators))], nil
+	return set[(number+round)%uint64(len(set))], nil
 }
+
+// ValidatorsFor returns the set governing a height.
+func (p *PoA) ValidatorsFor(blockNumber uint64) []common.Address {
+	set := p.setFor(blockNumber)
+	out := make([]common.Address, len(set))
+	copy(out, set)
+	return out
+}
+
+// IsValidatorAt reports whether an address is in the set at a height.
+func (p *PoA) IsValidatorAt(addr common.Address, blockNumber uint64) bool {
+	for _, v := range p.setFor(blockNumber) {
+		if v == addr {
+			return true
+		}
+	}
+	return false
+}
+
+// QuorumFor returns how many attestations finalize a block at a height.
+func (p *PoA) QuorumFor(blockNumber uint64) int { return core.Quorum(len(p.setFor(blockNumber))) }
 
 // earliestTimeFor returns the first timestamp at which a block for the given
 // round is permitted. A fallback proposer has to wait out the rounds before
@@ -216,7 +273,8 @@ func (p *PoA) VerifyHeader(chain HeaderReader, header, parent *core.Header) erro
 	// fallback round must additionally have waited out every round before it.
 	// That wait is the whole safety argument for the fallback: a validator
 	// cannot seize a turn that is not yet forfeit.
-	if header.Round > uint64(len(p.validators)) {
+	set := p.setFor(header.NumberU64())
+	if header.Round > uint64(len(set)) {
 		return fmt.Errorf("%w: round %d exceeds the validator count", ErrRoundTooHigh, header.Round)
 	}
 	earliest := p.earliestTimeFor(parent.Time, header.Round)
@@ -232,7 +290,7 @@ func (p *PoA) VerifyHeader(chain HeaderReader, header, parent *core.Header) erro
 	if err != nil {
 		return err
 	}
-	if !p.IsValidator(proposer) {
+	if !p.IsValidatorAt(proposer, header.NumberU64()) {
 		return fmt.Errorf("%w: %s", ErrUnauthorizedProposer, proposer)
 	}
 	expected, err := p.ProposerAtRound(header.Number.Uint64(), header.Round)
@@ -260,7 +318,7 @@ func (p *PoA) Prepare(chain HeaderReader, header *core.Header) error {
 	// The round follows from how long the parent has been unextended, so a
 	// proposer only claims a fallback turn once the earlier ones have lapsed.
 	round := p.RoundFor(parent.Time, p.now())
-	if max := uint64(len(p.validators)); round > max {
+	if max := uint64(len(p.setFor(header.NumberU64()))); round > max {
 		round = max
 	}
 	header.Round = round
@@ -310,7 +368,7 @@ func (p *PoA) NextProposalTime(parent *core.Header) time.Time {
 // into account any rounds that have already lapsed.
 func (p *PoA) IsMyTurn(addr common.Address, nextNumber uint64, parentTime uint64) bool {
 	round := p.RoundFor(parentTime, p.now())
-	if max := uint64(len(p.validators)); round > max {
+	if max := uint64(len(p.setFor(nextNumber))); round > max {
 		round = max
 	}
 	proposer, err := p.ProposerAtRound(nextNumber, round)

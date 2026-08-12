@@ -24,6 +24,9 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
 - Finalizes blocks with validator attestations: once more than two thirds have voted,
   the block can never be reorganised away. One absent validator costs a round, not the
   chain.
+- Runs open proof of stake: validators join by depositing, the set changes only at epoch
+  boundaries and only at a bounded rate, equivocation is slashed, and an inactivity leak
+  lets a network that lost a third of its stake finalize again.
 - Prices gas with an EIP-1559 fee market: the base fee is burned, the priority fee pays
   the proposer.
 - Connects peers over authenticated, encrypted links with forward secrecy, scores their
@@ -52,6 +55,7 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
 | `evm` | The bytecode interpreter, gas metering and precompiles |
 | `processor` | Transaction execution, intrinsic gas, the fee market |
 | `consensus` | Block sealing, round-based proposer fallback, attestations and finality |
+| `staking` | The proof-of-stake validator registry and its lifecycle |
 | `chain` | Genesis, block storage and indexes, validation, reorganisation |
 | `txpool` | Pending and queued transactions with nonce and fee rules |
 | `miner` | Block assembly |
@@ -105,6 +109,15 @@ node asks for a specific hash and discards anything that does not hash to it. A 
 peer can refuse to answer; it cannot substitute state. The only thing established out of
 band is the root, and that comes with a quorum certificate.
 
+**The validator set is state, not configuration.** The registry lives in the state trie
+as ordinary account storage, so every node agrees on who may propose for exactly the
+reason it agrees on balances. The set for an epoch is read from the state at the end of
+the previous one, which is what makes it usable for verification: a node checking a block
+already holds the state that decided who was allowed to produce it.
+
+**Slashed stake is burned, not paid out.** Rewarding whoever reports an offence would
+create an incentive to provoke one.
+
 **Pruning walks, it does not count.** Reference counting would be cheaper, but a single
 miscounted reference silently destroys state that is still in use. A mark from the
 retained roots cannot be wrong about what is reachable, and a write barrier makes it
@@ -113,7 +126,7 @@ safe to run while blocks are still arriving.
 ## Testing
 
 ```
-$ go test ./...           # 418 tests
+$ go test ./...           # 448 tests
 $ go test -race ./...
 ```
 
@@ -141,19 +154,35 @@ layer1 send      -from <addr> -to <addr> -value <wei> [-data <hex>]
 layer1 call      -to <addr> -data <hex>
 layer1 balance   <address>
 layer1 status
+layer1 prune     [-monitor host:port]
 ```
+
+## Staking
+
+A validator joins by sending its stake to the system account, and leaves the same way:
+
+```
+# deposit: 0x01 || withdrawal address, with the stake as the transaction value
+layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff \
+            -value 32000000000000000000 -data 0x01<withdrawalAddress>
+
+# request exit
+layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff -data 0x02
+
+# withdraw, once the delay has elapsed
+layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff -data 0x03
+```
+
+`layer1_validatorInfo` reports a validator's stake and where it sits in its lifecycle.
 
 ## Scope
 
-[ROADMAP.md](ROADMAP.md) tracks the path to production. Six of its eight phases are
-done: consensus finality and liveness, network security, denial-of-service resistance,
-EVM equivalence, operations, and state management.
+[ROADMAP.md](ROADMAP.md) tracks the path to production. Seven of its eight phases are
+done. What remains, stated plainly:
 
-What remains, stated plainly:
-
-- **The validator set is fixed at genesis.** Equivocation is detected, proved and
-  gossiped, but nothing acts on the proof — there is no stake to slash and no mechanism
-  to rotate the set. Choosing one is a decision about what the network is for.
+- **Ethereum's correlation penalty is not implemented.** A coordinated attack is
+  currently slashed no harder than an isolated fault, so the cost of attacking with many
+  validators at once is lower than it should be.
 - **It has not been audited, and it has not been run in public.** Everything here is
   tested against its own author's model of what could go wrong, which is precisely the
   blind spot an independent audit and a long-running testnet exist to cover. Do not put

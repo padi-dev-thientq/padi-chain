@@ -139,6 +139,12 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 
 	header.GasUsed = usedGas
 
+	// Run the same end-of-epoch transition a verifier will run. Skipping it
+	// here would produce a state root nobody else agrees with.
+	if _, err := proc.ProcessEpochBoundary(statedb, header, b.chain.FinalizedNumber()); err != nil {
+		return nil, fmt.Errorf("miner: epoch transition: %w", err)
+	}
+
 	// The state root has to be computed before the block is sealed, since the
 	// seal signs the header that contains it.
 	root, err := statedb.Commit(true)

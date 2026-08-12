@@ -9,6 +9,7 @@ import (
 	"layer1/common"
 	"layer1/core"
 	"layer1/db"
+	"layer1/staking"
 	"layer1/state"
 	"layer1/trie"
 )
@@ -34,6 +35,9 @@ type Genesis struct {
 	Validators []common.Address `json:"validators"`
 	// BlockPeriod is the target seconds between blocks.
 	BlockPeriod uint64 `json:"blockPeriod"`
+	// WithdrawalAddresses maps a genesis validator to where its stake returns
+	// if it exits. A validator with no entry withdraws to itself.
+	WithdrawalAddresses map[common.Address]common.Address `json:"withdrawalAddresses,omitempty"`
 }
 
 // DefaultGenesis returns a development genesis with the given validators.
@@ -223,6 +227,32 @@ func (g *Genesis) ToBlock(store db.Database) (*core.Block, error) {
 			statedb.SetState(addr, key, value)
 		}
 	}
+	// Seed the validator registry. The genesis validators are staked by the
+	// protocol rather than by a deposit transaction, because there is no chain
+	// yet to carry one — the same bootstrapping problem Ethereum solved with a
+	// deposit contract pre-populated before the merge.
+	if len(g.Validators) > 0 {
+		manager := staking.NewManager(statedb)
+		for _, validator := range g.Validators {
+			withdrawal := validator
+			if g.WithdrawalAddresses != nil {
+				if w, ok := g.WithdrawalAddresses[validator]; ok {
+					withdrawal = w
+				}
+			}
+			statedb.AddBalance(staking.StakingAddress, staking.MinDeposit)
+			v, err := manager.Deposit(validator, withdrawal, staking.MinDeposit, 0)
+			if err != nil {
+				return nil, fmt.Errorf("chain: staking genesis validator %s: %w", validator, err)
+			}
+			// Genesis validators are active from the first block; there is no
+			// earlier epoch for them to have queued in.
+			v.Status = staking.StatusActive
+			v.ActivationEpoch = 0
+			manager.Registry().Put(v)
+		}
+	}
+
 	// Genesis accounts are written as specified, including ones that would
 	// otherwise be pruned as empty.
 	root, err := statedb.Commit(false)

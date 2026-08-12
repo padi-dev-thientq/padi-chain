@@ -274,8 +274,14 @@ func (n *Node) HandleAttestations(attestations []*core.Attestation) {
 				// finality, so it is logged loudly and the proof is spread.
 				n.metrics.Equivocations.Inc()
 				n.log.Error("equivocation detected", "height", attestation.Number, "err", err)
+				evidence := n.attestations.Evidence()
 				if n.network != nil {
-					n.network.BroadcastEvidence(n.attestations.Evidence())
+					n.network.BroadcastEvidence(evidence)
+				}
+				// Detecting the offence is only half the job; the proof has to
+				// reach the chain for the stake to be slashed.
+				for _, proof := range evidence {
+					n.reportEquivocation(proof)
 				}
 			}
 			continue
@@ -295,6 +301,7 @@ func (n *Node) HandleEvidence(evidence []*core.Equivocation) {
 			continue
 		}
 		n.log.Error("validator equivocated", "validator", proof.Validator, "height", proof.Number)
+		n.reportEquivocation(proof)
 	}
 }
 

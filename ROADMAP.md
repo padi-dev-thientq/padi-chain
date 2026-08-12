@@ -69,16 +69,32 @@ recompiling.
 Still open here: the pruner holds the reachable set in memory, which is fine
 at present scale and will not be for a very large state.
 
-## Phase 7 — Validator set governance  — NOT DONE
+## Phase 7 — Validator set governance  — DONE
 
-*Why it is still open:* the right answer depends on what the network is for,
-and picking one unilaterally would be the wrong call.
+Open proof of stake, following the shape Ethereum settled on.
 
-The validator set is fixed at genesis. Equivocation is detected, proved and
-gossiped, but nothing acts on the proof — there is no stake to slash and no
-mechanism to remove a validator. Adding one means choosing between a
-permissioned set with governance-controlled membership and an open
-proof-of-stake set, which is a decision about the network, not about the code.
+- Stake is deposited by an ordinary transaction to a system account, the way
+  Ethereum's deposits go to its deposit contract.
+- The registry lives in the state trie, so the state root already commits to
+  it: every node agrees on the validator set for the same reason it agrees on
+  balances, and a light client can prove a validator's status.
+- The set changes only at epoch boundaries and only at the churn limit's pace,
+  so the set a block is verified against was settled before that block existed.
+- Effective balance is capped and rounded, removing the incentive to
+  concentrate stake on one key and stopping weights from flickering.
+- Exits are queued and withdrawals delayed past the window in which evidence
+  could still surface.
+- Equivocation is slashed: the stake is burned rather than paid to the
+  reporter, which would otherwise create an incentive to provoke it.
+- Attestation rewards and penalties are derived from the quorum certificates
+  the chain carries, so participation is a fact about the chain rather than a
+  claim anyone makes.
+- An inactivity leak drains absent validators while the chain fails to
+  finalize, so a network that has lost a third of its stake can recover.
+
+Still open here: Ethereum's correlation penalty, which scales a slashing with
+how many validators were slashed near the same time, is not implemented — a
+coordinated attack is currently punished no harder than an isolated fault.
 
 ## Phase 8 — What code cannot deliver  — NOT DONE
 

@@ -11,6 +11,7 @@ import (
 	"layer1/core"
 	"layer1/db"
 	"layer1/processor"
+	"layer1/staking"
 	"layer1/state"
 	"layer1/trie"
 )
@@ -67,6 +68,12 @@ func NewBlockChain(store db.Database, genesis *Genesis, engine consensus.Engine)
 		config: processor.DefaultConfig(genesis.ChainID),
 	}
 	bc.processor = processor.NewProcessor(bc.config, bc)
+
+	// Hand the engine a live view of the registry, so the validator set is
+	// consensus state rather than configuration.
+	if poa, ok := engine.(*consensus.PoA); ok {
+		poa.SetValidatorProvider(bc)
+	}
 
 	// Either load the existing chain or write the genesis block.
 	stored, err := ReadGenesisHash(store)
@@ -303,7 +310,11 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 	if err != nil {
 		return fmt.Errorf("chain: loading parent state: %w", err)
 	}
-	receipts, logs, _, err := bc.processor.Process(block, statedb)
+	finalizedNumber := uint64(0)
+	if bc.finalized != nil {
+		finalizedNumber = bc.finalized.NumberU64()
+	}
+	receipts, logs, _, err := bc.processor.Process(block, statedb, finalizedNumber)
 	if err != nil {
 		return err
 	}
@@ -506,4 +517,62 @@ func (bc *BlockChain) GetLogs(hash common.Hash) []*core.Log {
 // block counts the same, so the height is the measure.
 func (bc *BlockChain) TotalDifficulty() *big.Int {
 	return new(big.Int).SetUint64(bc.CurrentBlock().NumberU64())
+}
+
+// ValidatorsAt returns the validator set that governs a block height, read from
+// the staking registry.
+//
+// The set for an epoch is taken from the state at the end of the previous
+// epoch. Fixing it a whole epoch ahead is what makes it usable for verification:
+// a node checking a block already has the state that decided who was allowed to
+// produce it, and no reorganisation within the epoch can change the answer.
+func (bc *BlockChain) ValidatorsAt(blockNumber uint64) ([]common.Address, error) {
+	epoch := staking.EpochOf(blockNumber)
+	if epoch == 0 {
+		// The first epoch runs on the genesis set; there is no earlier state.
+		return bc.genesisValidators(), nil
+	}
+
+	// The last block of the previous epoch settled this epoch's set.
+	boundary := staking.EpochStart(epoch) - 1
+	header := bc.GetHeaderByNumber(boundary)
+	if header == nil {
+		return bc.genesisValidators(), nil
+	}
+	statedb, err := bc.StateAt(header.StateRoot)
+	if err != nil {
+		return nil, fmt.Errorf("chain: reading the validator set at block %d: %w", boundary, err)
+	}
+	set, err := staking.NewRegistry(statedb).ActiveAddressesAt(epoch)
+	if err != nil {
+		return nil, err
+	}
+	if len(set) == 0 {
+		// An empty registry would halt the chain. Falling back keeps it
+		// verifiable while an operator works out what went wrong.
+		return bc.genesisValidators(), nil
+	}
+	return set, nil
+}
+
+func (bc *BlockChain) genesisValidators() []common.Address {
+	return bc.engine.Validators()
+}
+
+// Validators returns the set governing the current head.
+func (bc *BlockChain) Validators() []common.Address {
+	set, err := bc.ValidatorsAt(bc.CurrentBlock().NumberU64() + 1)
+	if err != nil {
+		return bc.genesisValidators()
+	}
+	return set
+}
+
+// StakingRegistry returns a read-only view of the registry at the head.
+func (bc *BlockChain) StakingRegistry() (*staking.Registry, error) {
+	statedb, err := bc.State()
+	if err != nil {
+		return nil, err
+	}
+	return staking.NewRegistry(statedb), nil
 }

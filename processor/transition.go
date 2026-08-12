@@ -9,6 +9,7 @@ import (
 	"layer1/common"
 	"layer1/core"
 	"layer1/evm"
+	"layer1/staking"
 	"layer1/state"
 )
 
@@ -191,6 +192,13 @@ func (st *StateTransition) run() (*ExecutionResult, error) {
 	// cold-access surcharge.
 	st.state.Prepare(msg.From, st.evm.Context.Coinbase, msg.To, evm.PrecompileAddresses(), msg.AccessList)
 
+	// A staking operation is executed by the protocol rather than the EVM, so
+	// the registry's invariants live in one place and cannot be disturbed by a
+	// contract.
+	if IsStakingCall(msg) {
+		return st.runStakingCall()
+	}
+
 	var (
 		ret   []byte
 		vmErr error
@@ -212,6 +220,68 @@ func (st *StateTransition) run() (*ExecutionResult, error) {
 		Err:        vmErr,
 		ReturnData: ret,
 	}, nil
+}
+
+// runStakingCall applies a staking operation, moving the value it carries into
+// the staking account first.
+//
+// A rejected operation is reverted but still charged: submitting an invalid
+// deposit or a forged slashing report has to cost something, or the mempool
+// becomes free to spam.
+func (st *StateTransition) runStakingCall() (*ExecutionResult, error) {
+	msg := st.msg
+	epoch := stakingEpochOf(st.evm.Context.BlockNumber)
+
+	st.state.SetNonce(msg.From, st.state.GetNonce(msg.From)+1)
+	snapshot := st.state.Snapshot()
+
+	var opErr error
+	if msg.Value.Sign() > 0 {
+		if st.state.GetBalance(msg.From).Cmp(msg.Value) < 0 {
+			opErr = ErrInsufficientFunds
+		} else {
+			st.state.SubBalance(msg.From, msg.Value)
+			st.state.AddBalance(staking.StakingAddress, msg.Value)
+		}
+	}
+
+	cost := GasExit // the cheapest operation, charged even when the call fails
+	if opErr == nil {
+		used, err := st.applyStakingCall(epoch)
+		opErr = err
+		if used > cost {
+			cost = used
+		}
+	}
+
+	if !st.useGas(cost) {
+		st.state.RevertToSnapshot(snapshot)
+		st.gas = 0
+		st.refundGas()
+		st.payProposer()
+		return &ExecutionResult{UsedGas: st.gasUsed(), Err: evm.ErrOutOfGas}, nil
+	}
+	if opErr != nil {
+		st.state.RevertToSnapshot(snapshot)
+	}
+
+	st.refundGas()
+	st.payProposer()
+	return &ExecutionResult{UsedGas: st.gasUsed(), Err: opErr}, nil
+}
+
+// useGas deducts gas from the transaction's remaining budget.
+func (st *StateTransition) useGas(amount uint64) bool {
+	if st.gas < amount {
+		return false
+	}
+	st.gas -= amount
+	return true
+}
+
+// stakingEpochOf returns the epoch a block belongs to.
+func stakingEpochOf(blockNumber *big.Int) uint64 {
+	return staking.EpochOf(blockNumber.Uint64())
 }
 
 // preCheck validates the message and charges the sender for the gas up front.
