@@ -1,0 +1,49 @@
+# Binaries
+/layer1
+/bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go build & tooling caches
+/vendor/
+go.work
+go.work.sum
+*.prof
+*.pprof
+coverage.txt
+coverage.html
+
+# Chain data & runtime state
+/data/
+/chaindata/
+/keystore/
+/nodekey
+*.ipc
+*.log
+*.pid
+
+# Local config & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+!testdata/**/*.key
+
+# Editors & OS
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Claude Code
+.claude/settings.local.json
