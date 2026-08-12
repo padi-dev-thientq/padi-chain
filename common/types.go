@@ -178,6 +178,16 @@ func DecodeHex(s string) ([]byte, error) {
 	return b, nil
 }
 
+// MustDecodeHex is DecodeHex for literals known to be valid; it panics on
+// malformed input.
+func MustDecodeHex(s string) []byte {
+	b, err := DecodeHex(s)
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
 // EncodeHexUint renders an integer in the minimal 0x-prefixed form used by the
 // JSON-RPC API ("0x0" for zero, no leading zeros otherwise).
 func EncodeHexUint(v uint64) string { return "0x" + strconv.FormatUint(v, 16) }

@@ -5,6 +5,8 @@ import (
 	"math/big"
 	"testing"
 
+	"layer1/crypto/bn254"
+
 	"layer1/common"
 	"layer1/db"
 	"layer1/state"
@@ -1044,4 +1046,200 @@ func BenchmarkArithmeticLoop(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		evm.Call(AccountRef(sender), contract, nil, 100000, new(big.Int))
 	}
+}
+
+func TestRipemd160Precompile(t *testing.T) {
+	evm, _ := newTestEVM(t)
+	ret, _, err := evm.Call(AccountRef(sender), ripemd160Address, []byte("abc"), 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The 20-byte digest, left-padded to a word.
+	want := "0x0000000000000000000000008eb208f7e05d987a9b044a8e98c6b087f15a0bfc"
+	if common.EncodeHex(ret) != want {
+		t.Fatalf("ripemd160(abc) = %s, want %s", common.EncodeHex(ret), want)
+	}
+}
+
+func TestBlake2FPrecompile(t *testing.T) {
+	evm, _ := newTestEVM(t)
+	// The twelve-round vector from EIP-152.
+	input := common.MustDecodeHex("0000000c" +
+		"48c9bdf267e6096a3ba7ca8485ae67bb2bf894fe72f36e3cf1361d5f3af54fa5d182e6ad7f520e511f6c3e2b8c68059b6bbd41fbabd9831f79217e1319cde05b" +
+		"6162630000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"0000000000000000000000000000000000000000000000000000000000000000" +
+		"03000000000000000000000000000000" + "01")
+
+	ret, _, err := evm.Call(AccountRef(sender), blake2FAddress, input, 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "0xba80a53f981c4d0d6a2797b69f12f6e94c212f14685ac4b74b12bb6fdbffa2d1" +
+		"7d87c5392aab792dc252d5de4533cc9518d38aa8dbf1925ab92386edd4009923"
+	if common.EncodeHex(ret) != want {
+		t.Fatalf("blake2f = %s\nwant     %s", common.EncodeHex(ret), want)
+	}
+
+	// Gas is charged per round, so a cheaper call must cost less.
+	cheap := &blake2F{}
+	if cheap.RequiredGas(input) != 12 {
+		t.Fatalf("gas for twelve rounds = %d, want 12", cheap.RequiredGas(input))
+	}
+}
+
+func TestBn256AddPrecompile(t *testing.T) {
+	evm, _ := newTestEVM(t)
+
+	// G + G must equal 2G.
+	g := bn254.G1Generator()
+	input := append(writeG1(g), writeG1(g)...)
+
+	ret, _, err := evm.Call(AccountRef(sender), bn256AddAddress, input, 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := writeG1(g.ScalarMul(big.NewInt(2)))
+	if common.EncodeHex(ret) != common.EncodeHex(want) {
+		t.Fatalf("G+G = %s, want %s", common.EncodeHex(ret), common.EncodeHex(want))
+	}
+
+	// Adding the identity leaves a point unchanged.
+	input = append(writeG1(g), make([]byte, 64)...)
+	ret, _, err = evm.Call(AccountRef(sender), bn256AddAddress, input, 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.EncodeHex(ret) != common.EncodeHex(writeG1(g)) {
+		t.Fatal("adding the identity changed the point")
+	}
+
+	// An off-curve point must be rejected rather than silently producing a
+	// result on some other curve.
+	bad := make([]byte, 128)
+	bad[31] = 1
+	bad[63] = 3
+	if _, _, err := evm.Call(AccountRef(sender), bn256AddAddress, bad, 100000, new(big.Int)); err == nil {
+		t.Fatal("an off-curve input was accepted")
+	}
+}
+
+func TestBn256ScalarMulPrecompile(t *testing.T) {
+	evm, _ := newTestEVM(t)
+	g := bn254.G1Generator()
+
+	scalar := big.NewInt(9)
+	input := append(writeG1(g), common.LeftPadBytes(scalar.Bytes(), 32)...)
+
+	ret, _, err := evm.Call(AccountRef(sender), bn256MulAddress, input, 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.EncodeHex(ret) != common.EncodeHex(writeG1(g.ScalarMul(scalar))) {
+		t.Fatal("scalar multiplication gave the wrong point")
+	}
+
+	// Multiplying by zero yields the identity.
+	input = append(writeG1(g), make([]byte, 32)...)
+	ret, _, err = evm.Call(AccountRef(sender), bn256MulAddress, input, 100000, new(big.Int))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if common.EncodeHex(ret) != common.EncodeHex(make([]byte, 64)) {
+		t.Fatalf("0*G = %s, want the identity", common.EncodeHex(ret))
+	}
+}
+
+// encodeG2 renders a twist point in the EIP-197 order, imaginary part first.
+func encodeG2(p *bn254.G2) []byte {
+	out := make([]byte, 128)
+	if p.Infinity {
+		return out
+	}
+	p.X.C1.FillBytes(out[0:32])
+	p.X.C0.FillBytes(out[32:64])
+	p.Y.C1.FillBytes(out[64:96])
+	p.Y.C0.FillBytes(out[96:128])
+	return out
+}
+
+func TestBn256PairingPrecompile(t *testing.T) {
+	evm, _ := newTestEVM(t)
+	g1, g2 := bn254.G1Generator(), bn254.G2Generator()
+
+	t.Run("empty input is a trivially true product", func(t *testing.T) {
+		ret, _, err := evm.Call(AccountRef(sender), bn256PairAddress, nil, 200000, new(big.Int))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret[31] != 1 {
+			t.Fatalf("empty pairing check returned %x, want 1", ret)
+		}
+	})
+
+	t.Run("e(P,Q)*e(-P,Q) is one", func(t *testing.T) {
+		input := append(append(writeG1(g1), encodeG2(g2)...),
+			append(writeG1(g1.Neg()), encodeG2(g2)...)...)
+		ret, _, err := evm.Call(AccountRef(sender), bn256PairAddress, input, 1_000_000, new(big.Int))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret[31] != 1 {
+			t.Fatal("the cancelling pairing product did not check out")
+		}
+	})
+
+	t.Run("a single pairing is not one", func(t *testing.T) {
+		input := append(writeG1(g1), encodeG2(g2)...)
+		ret, _, err := evm.Call(AccountRef(sender), bn256PairAddress, input, 1_000_000, new(big.Int))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret[31] != 0 {
+			t.Fatal("e(P,Q) alone should not be one")
+		}
+	})
+
+	t.Run("bilinear product", func(t *testing.T) {
+		// e(aP, bQ) * e(-abP, Q) == 1, the shape a SNARK verifier checks.
+		a, b := big.NewInt(11), big.NewInt(13)
+		ab := new(big.Int).Mul(a, b)
+		input := append(append(writeG1(g1.ScalarMul(a)), encodeG2(g2.ScalarMul(b))...),
+			append(writeG1(g1.ScalarMul(ab).Neg()), encodeG2(g2)...)...)
+
+		ret, _, err := evm.Call(AccountRef(sender), bn256PairAddress, input, 2_000_000, new(big.Int))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ret[31] != 1 {
+			t.Fatal("the bilinear product check failed")
+		}
+	})
+
+	t.Run("malformed length is rejected", func(t *testing.T) {
+		if _, _, err := evm.Call(AccountRef(sender), bn256PairAddress, make([]byte, 100), 1_000_000, new(big.Int)); err == nil {
+			t.Fatal("input that is not a whole number of pairs was accepted")
+		}
+	})
+
+	t.Run("a point outside the subgroup is rejected", func(t *testing.T) {
+		// A G2 point on the twist but of the wrong order lets an attacker
+		// steer the pairing result, so it must never be accepted.
+		input := make([]byte, 192)
+		copy(input, writeG1(g1))
+		input[64+31] = 1 // an arbitrary Fp2 value that is not a valid point
+		if _, _, err := evm.Call(AccountRef(sender), bn256PairAddress, input, 1_000_000, new(big.Int)); err == nil {
+			t.Fatal("an invalid G2 point was accepted")
+		}
+	})
+
+	t.Run("gas scales with the number of pairs", func(t *testing.T) {
+		p := &bn256Pairing{}
+		one := p.RequiredGas(make([]byte, pairSize))
+		two := p.RequiredGas(make([]byte, 2*pairSize))
+		if two-one != 34000 {
+			t.Fatalf("the marginal cost of a pair is %d, want 34000", two-one)
+		}
+	})
 }
