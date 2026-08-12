@@ -348,8 +348,10 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 	// the fork choice means the head can only move to a branch that respects
 	// the newly settled history.
 	if qc, err := block.Justification(); err == nil && !qc.IsEmpty() {
-		if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err == nil {
-			bc.finalizeLocked(qc)
+		if validators, verr := bc.ValidatorsAt(qc.Number); verr == nil {
+			if _, err := qc.Verify(bc.config.ChainID, validators); err == nil {
+				bc.finalizeLocked(qc)
+			}
 		}
 	}
 
@@ -410,7 +412,11 @@ func (bc *BlockChain) verifyBlock(block *core.Block, parent *core.Block) error {
 		if qc.Number >= block.NumberU64() {
 			return fmt.Errorf("chain: block %d justifies height %d, which is not an ancestor", block.NumberU64(), qc.Number)
 		}
-		if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err != nil {
+		validators, err := bc.ValidatorsAt(qc.Number)
+		if err != nil {
+			return err
+		}
+		if _, err := qc.Verify(bc.config.ChainID, validators); err != nil {
 			return fmt.Errorf("chain: block %d carries an invalid justification: %w", block.NumberU64(), err)
 		}
 	}

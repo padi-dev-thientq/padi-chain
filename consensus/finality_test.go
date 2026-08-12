@@ -348,3 +348,62 @@ func TestRoundOpensOnlyAfterItsTimeout(t *testing.T) {
 		}
 	}
 }
+
+func TestPoolFollowsAChangingValidatorSet(t *testing.T) {
+	keys, addrs := validatorKeys(t, 4)
+	// The pool starts with the genesis set of two.
+	pool := NewAttestationPool(testChainID, addrs[:2])
+	hash := common.Keccak256([]byte("block"))
+
+	if got := pool.Quorum(); got != core.Quorum(2) {
+		t.Fatalf("quorum = %d, want %d for a set of two", got, core.Quorum(2))
+	}
+
+	// A validator that has since joined must not have its votes rejected.
+	newcomer, _ := core.SignAttestation(keys[2], testChainID, 1, hash)
+	if _, err := pool.Add(newcomer); !errors.Is(err, core.ErrUnknownAttester) {
+		t.Fatalf("got %v, want the vote refused before the set grows", err)
+	}
+
+	pool.UpdateValidators(addrs[:4])
+	if got := pool.Quorum(); got != core.Quorum(4) {
+		t.Fatalf("quorum = %d, want %d once the set has grown", got, core.Quorum(4))
+	}
+	if added, err := pool.Add(newcomer); err != nil || !added {
+		t.Fatalf("the newcomer's vote was still refused: %v", err)
+	}
+
+	// Votes cast before the change are kept: they were valid when cast.
+	for i := 0; i < 2; i++ {
+		a, _ := core.SignAttestation(keys[i], testChainID, 1, hash)
+		if _, err := pool.Add(a); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if pool.VoteCount(1, hash) != 3 {
+		t.Fatalf("votes = %d, want 3", pool.VoteCount(1, hash))
+	}
+	// Three of four is a quorum; two would not have been.
+	if pool.Certificate(1, hash) == nil {
+		t.Fatal("no certificate at the quorum for the enlarged set")
+	}
+}
+
+func TestQuorumGrowsWithTheSet(t *testing.T) {
+	_, addrs := validatorKeys(t, 4)
+	pool := NewAttestationPool(testChainID, addrs[:1])
+
+	// A single validator finalizes alone; two do not, because a set of two
+	// needs both. Getting this wrong would let a minority finalize.
+	if pool.Quorum() != 1 {
+		t.Fatalf("quorum for one validator = %d, want 1", pool.Quorum())
+	}
+	pool.UpdateValidators(addrs[:2])
+	if pool.Quorum() != 2 {
+		t.Fatalf("quorum for two validators = %d, want 2", pool.Quorum())
+	}
+	pool.UpdateValidators(addrs[:4])
+	if pool.Quorum() != 3 {
+		t.Fatalf("quorum for four validators = %d, want 3", pool.Quorum())
+	}
+}

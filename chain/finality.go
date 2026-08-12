@@ -63,7 +63,14 @@ func (bc *BlockChain) Finalize(qc *core.QuorumCert) error {
 	if qc.IsEmpty() {
 		return core.ErrQuorumNotMet
 	}
-	if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err != nil {
+	// The certificate is checked against the set that governed the height it
+	// names, not the set in force now: validators come and go, and a
+	// certificate does not stop being valid because its signers have left.
+	validators, err := bc.ValidatorsAt(qc.Number)
+	if err != nil {
+		return err
+	}
+	if _, err := qc.Verify(bc.config.ChainID, validators); err != nil {
 		return err
 	}
 
@@ -167,7 +174,11 @@ func (bc *BlockChain) ImportSnapshot(block *core.Block, qc *core.QuorumCert) err
 		return fmt.Errorf("chain: the certificate does not name the offered block")
 	}
 	// The signatures are the whole basis for trusting this state.
-	if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err != nil {
+	validators, err := bc.ValidatorsAt(qc.Number)
+	if err != nil {
+		return err
+	}
+	if _, err := qc.Verify(bc.config.ChainID, validators); err != nil {
 		return fmt.Errorf("chain: snapshot certificate: %w", err)
 	}
 

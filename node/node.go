@@ -242,6 +242,7 @@ func (n *Node) HandleBlock(block *core.Block) error {
 	err := n.chain.InsertBlock(block)
 	switch {
 	case err == nil:
+		n.syncValidatorSet()
 		n.metrics.BlocksImported.Inc()
 		n.metrics.BlockGasUsed.Observe(float64(block.GasUsed()))
 		n.txpool.Reset(block.Transactions())
@@ -302,6 +303,16 @@ func (n *Node) HandleEvidence(evidence []*core.Equivocation) {
 		}
 		n.log.Error("validator equivocated", "validator", proof.Validator, "height", proof.Number)
 		n.reportEquivocation(proof)
+	}
+}
+
+// syncValidatorSet keeps the attestation pool aligned with the set the chain
+// says is active. Without this a validator that joined after genesis would have
+// its votes rejected, and the quorum would be computed for a set that no longer
+// exists.
+func (n *Node) syncValidatorSet() {
+	if set := n.chain.Validators(); len(set) > 0 {
+		n.attestations.UpdateValidators(set)
 	}
 }
 
@@ -488,6 +499,7 @@ func (n *Node) tryPropose() {
 		return
 	}
 
+	n.syncValidatorSet()
 	n.metrics.BlocksProduced.Inc()
 	n.metrics.BlockGasUsed.Observe(float64(result.Block.GasUsed()))
 	n.txpool.Reset(result.Included)

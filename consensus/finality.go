@@ -60,7 +60,41 @@ func NewAttestationPool(chainID *big.Int, validators []common.Address) *Attestat
 }
 
 // Quorum returns the number of votes a certificate needs.
-func (p *AttestationPool) Quorum() int { return core.Quorum(p.size) }
+func (p *AttestationPool) Quorum() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return core.Quorum(p.size)
+}
+
+// UpdateValidators replaces the set the pool accepts votes from.
+//
+// Under proof of stake the set changes as validators join and leave, so a pool
+// pinned to the genesis set would reject a new validator's votes and keep
+// computing a quorum for a set that no longer exists. Votes already collected
+// are kept: they were valid when cast, and a validator that has since left was
+// still accountable for the height it voted at.
+func (p *AttestationPool) UpdateValidators(validators []common.Address) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	set := make(map[common.Address]struct{}, len(validators))
+	for _, v := range validators {
+		set[v] = struct{}{}
+	}
+	p.validators = set
+	p.size = len(validators)
+}
+
+// Validators returns the set the pool currently accepts votes from.
+func (p *AttestationPool) Validators() []common.Address {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]common.Address, 0, len(p.validators))
+	for v := range p.validators {
+		out = append(out, v)
+	}
+	return out
+}
 
 // Add records an attestation and reports whether it was new.
 //

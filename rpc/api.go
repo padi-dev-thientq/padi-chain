@@ -711,8 +711,8 @@ func (a *API) nodeInfo(params []json.RawMessage) (any, error) {
 		"head":        head.Hash().Hex(),
 		"blockNumber": common.EncodeHexUint(head.NumberU64()),
 		"finalized":   common.EncodeHexUint(bc.FinalizedNumber()),
-		"validators":  len(bc.Engine().Validators()),
-		"quorum":      bc.Engine().Quorum(),
+		"validators":  len(bc.Validators()),
+		"quorum":      core.Quorum(len(bc.Validators())),
 		"peers":       a.backend.PeerCount(),
 		"txpool":      map[string]int{"pending": pending, "queued": queued},
 	}, nil
