@@ -556,3 +556,76 @@ func hexPrefixDecode(b []byte) ([]byte, error) {
 	}
 	return nibbles, nil
 }
+
+// VisitNodes walks every node of the trie, reporting each stored node's hash
+// and each key/value pair.
+//
+// This is what a pruner needs: the set of node hashes reachable from a root is
+// exactly the set that must survive, and the leaf values are how the walk
+// crosses into storage tries and contract code.
+func (t *Trie) VisitNodes(onNode func(hash common.Hash) error, onLeaf func(key, value []byte) error) error {
+	return t.visit(t.root, nil, onNode, onLeaf)
+}
+
+func (t *Trie) visit(n node, path []byte, onNode func(common.Hash) error, onLeaf func(key, value []byte) error) error {
+	switch n := n.(type) {
+	case nil:
+		return nil
+
+	case valueNode:
+		if onLeaf == nil {
+			return nil
+		}
+		return onLeaf(nibblesToKey(path), n)
+
+	case *shortNode:
+		// A node with a cached hash is one that was stored under it.
+		if n.flags.hash != nil && onNode != nil {
+			if err := onNode(common.BytesToHash(n.flags.hash)); err != nil {
+				return err
+			}
+		}
+		return t.visit(n.value, append(append([]byte{}, path...), n.key...), onNode, onLeaf)
+
+	case *fullNode:
+		if n.flags.hash != nil && onNode != nil {
+			if err := onNode(common.BytesToHash(n.flags.hash)); err != nil {
+				return err
+			}
+		}
+		for i, child := range &n.children {
+			if child == nil {
+				continue
+			}
+			next := append(append([]byte{}, path...), byte(i))
+			if err := t.visit(child, next, onNode, onLeaf); err != nil {
+				return err
+			}
+		}
+		return nil
+
+	case hashNode:
+		// The node lives in the store; resolving it is what makes it visible
+		// to the walk.
+		if onNode != nil {
+			if err := onNode(common.BytesToHash(n)); err != nil {
+				return err
+			}
+		}
+		resolved, err := t.resolveHash(n)
+		if err != nil {
+			return err
+		}
+		return t.visit(resolved, path, onNode, onLeaf)
+
+	default:
+		return fmt.Errorf("%w: unexpected node %T", ErrInvalidNode, n)
+	}
+}
+
+// NodeKey returns the store key a trie node is written under. The pruner needs
+// it to sweep, and a sync protocol needs it to serve nodes by hash.
+func NodeKey(hash common.Hash) []byte { return nodeKey(hash[:]) }
+
+// NodeKeyPrefix is the namespace trie nodes occupy in the store.
+var NodeKeyPrefix = []byte("n")

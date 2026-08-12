@@ -32,7 +32,10 @@ var (
 type BlockChain struct {
 	mu sync.RWMutex
 
-	store     db.Database
+	// store is wrapped in write tracking so the pruner can tell which nodes
+	// were committed while it was deciding what to keep.
+	store     *db.TrackingDB
+	base      db.Database
 	engine    consensus.Engine
 	processor *processor.Processor
 	config    *processor.Config
@@ -58,7 +61,8 @@ type ChainEvent struct {
 // NewBlockChain opens (or initialises) a chain in store.
 func NewBlockChain(store db.Database, genesis *Genesis, engine consensus.Engine) (*BlockChain, error) {
 	bc := &BlockChain{
-		store:  store,
+		store:  db.NewTrackingDB(store),
+		base:   store,
 		engine: engine,
 		config: processor.DefaultConfig(genesis.ChainID),
 	}
@@ -132,8 +136,15 @@ func (bc *BlockChain) Processor() *processor.Processor { return bc.processor }
 // Engine returns the consensus engine.
 func (bc *BlockChain) Engine() consensus.Engine { return bc.engine }
 
-// Store returns the underlying key/value store.
+// Store returns the key/value store state is read from and written to.
 func (bc *BlockChain) Store() db.Database { return bc.store }
+
+// Tracker exposes the write-tracking wrapper, which the pruner needs.
+func (bc *BlockChain) Tracker() *db.TrackingDB { return bc.store }
+
+// BaseStore returns the untracked store underneath, for maintenance such as
+// compaction that must not be mistaken for state writes.
+func (bc *BlockChain) BaseStore() db.Database { return bc.base }
 
 // Subscribe registers a channel to receive head-change events. The channel
 // should be buffered; a send that would block is dropped rather than stalling

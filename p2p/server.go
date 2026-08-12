@@ -34,6 +34,15 @@ type Backend interface {
 	HandleAttestations(attestations []*core.Attestation)
 	// HandleEvidence imports equivocation proofs received from a peer.
 	HandleEvidence(evidence []*core.Equivocation)
+	// LocalSnapshot returns this node's finalized block and the certificate
+	// proving it, for a peer that wants to skip replaying the chain.
+	LocalSnapshot() (*core.Block, *core.QuorumCert)
+	// HandleSnapshot receives a peer's finalized block and certificate.
+	HandleSnapshot(block *core.Block, qc *core.QuorumCert)
+	// ServeStateNodes returns the state blobs it holds for the given hashes.
+	ServeStateNodes(hashes []common.Hash) [][]byte
+	// HandleStateNodes receives state blobs requested during a snapshot sync.
+	HandleStateNodes(blobs [][]byte)
 }
 
 // Config tunes the network layer.
@@ -257,13 +266,17 @@ func (s *Server) handleConnection(conn net.Conn, inbound bool) {
 	s.log.Info("peer disconnected", "id", key)
 }
 
-// syncFrom requests the blocks a peer has that this node does not.
+// syncFrom requests what a peer has that this node does not.
 func (s *Server) syncFrom(peer *Peer) {
 	_, ourHeight := s.backend.Head()
 	theirHeight := peer.HeadNumber()
 	if theirHeight <= ourHeight {
 		return
 	}
+
+	// Offer the peer a chance to hand over a finalized snapshot. Whether that
+	// is worth taking is the node's decision, not the network layer's.
+	peer.Send(MsgGetSnapshot, nil)
 	for from := ourHeight + 1; from <= theirHeight; from += MaxBlocksPerRequest {
 		count := theirHeight - from + 1
 		if count > MaxBlocksPerRequest {
@@ -300,6 +313,14 @@ func (s *Server) IsBanned(id NodeID) bool { return s.scores.isBanned(id) }
 
 // ScoreOf returns a peer's reputation score.
 func (s *Server) ScoreOf(id NodeID) int { return s.scores.scoreOf(id) }
+
+// SyncFromPeers re-runs the catch-up request against every peer, for a node
+// that has just jumped forward and needs the blocks since.
+func (s *Server) SyncFromPeers() {
+	for _, peer := range s.Peers() {
+		go s.syncFrom(peer)
+	}
+}
 
 // PeerCount returns the number of connected peers.
 func (s *Server) PeerCount() int {
@@ -398,6 +419,29 @@ func (s *Server) BroadcastEvidence(evidence []*core.Equivocation) {
 	for _, peer := range s.Peers() {
 		peer.sendRaw(MsgEvidence, payload)
 	}
+}
+
+// RequestSnapshot asks peers for a finalized block to sync state from.
+func (s *Server) RequestSnapshot() {
+	for _, peer := range s.Peers() {
+		peer.Send(MsgGetSnapshot, nil)
+	}
+}
+
+// RequestStateNodes asks a peer for state blobs. Requests go to one peer at a
+// time so a slow peer does not multiply into duplicate traffic everywhere.
+func (s *Server) RequestStateNodes(hashes []common.Hash) bool {
+	if len(hashes) == 0 {
+		return false
+	}
+	peers := s.Peers()
+	if len(peers) == 0 {
+		return false
+	}
+	// Spread requests across peers by the first hash, so no single peer
+	// carries the whole sync.
+	peer := peers[int(hashes[0][0])%len(peers)]
+	return peer.Send(MsgGetStateNodes, &StateNodesRequest{Hashes: hashes}) == nil
 }
 
 // AddPeer dials an additional peer at runtime.

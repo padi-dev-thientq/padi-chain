@@ -208,6 +208,10 @@ type NodeMetrics struct {
 	PeersBanned      *Counter
 	RPCRequests      *Counter
 	RPCErrors        *Counter
+	PruneRuns        *Counter
+	PrunedNodes      *Counter
+	CompactionRuns   *Counter
+	StateNodesSynced *Counter
 
 	ChainHead      *Gauge
 	ChainFinalized *Gauge
@@ -236,6 +240,10 @@ func NewNodeMetrics() *NodeMetrics {
 		PeersBanned:      r.Counter("layer1_peers_banned_total", "Peers banned for misbehaviour."),
 		RPCRequests:      r.Counter("layer1_rpc_requests_total", "JSON-RPC calls served."),
 		RPCErrors:        r.Counter("layer1_rpc_errors_total", "JSON-RPC calls that returned an error."),
+		PruneRuns:        r.Counter("layer1_prune_runs_total", "Completed state prunes."),
+		PrunedNodes:      r.Counter("layer1_pruned_nodes_total", "Trie nodes and code entries removed by pruning."),
+		CompactionRuns:   r.Counter("layer1_compaction_runs_total", "Completed store compactions."),
+		StateNodesSynced: r.Counter("layer1_state_nodes_synced_total", "State nodes downloaded during snapshot sync."),
 
 		ChainHead:      r.Gauge("layer1_chain_head", "Height of the canonical head."),
 		ChainFinalized: r.Gauge("layer1_chain_finalized", "Height of the highest finalized block."),

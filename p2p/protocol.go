@@ -34,6 +34,10 @@ const (
 	MsgEvidence
 	MsgGetAddresses
 	MsgAddresses
+	MsgGetSnapshot
+	MsgSnapshot
+	MsgGetStateNodes
+	MsgStateNodes
 )
 
 var messageNames = map[MessageCode]string{
@@ -50,6 +54,10 @@ var messageNames = map[MessageCode]string{
 	MsgEvidence:        "evidence",
 	MsgGetAddresses:    "getAddresses",
 	MsgAddresses:       "addresses",
+	MsgGetSnapshot:     "getSnapshot",
+	MsgSnapshot:        "snapshot",
+	MsgGetStateNodes:   "getStateNodes",
+	MsgStateNodes:      "stateNodes",
 }
 
 func (c MessageCode) String() string {
@@ -116,6 +124,28 @@ type AttestationsPayload struct {
 type EvidencePayload struct {
 	Evidence []*core.Equivocation
 }
+
+// SnapshotPayload offers a finalized block together with the certificate that
+// proves it final. The certificate is what lets the receiver trust the state
+// root without executing a single block.
+type SnapshotPayload struct {
+	Block       []byte
+	Certificate []byte
+}
+
+// StateNodesRequest asks for state blobs by hash.
+type StateNodesRequest struct {
+	Hashes []common.Hash
+}
+
+// StateNodesPayload carries state blobs. They are self-verifying: the receiver
+// checks each against the hash it asked for.
+type StateNodesPayload struct {
+	Nodes [][]byte
+}
+
+// MaxStateNodesPerMessage bounds a state response.
+const MaxStateNodesPerMessage = 256
 
 // MaxAttestationsPerMessage bounds a single votes message.
 const MaxAttestationsPerMessage = 512

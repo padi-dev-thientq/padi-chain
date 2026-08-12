@@ -53,16 +53,21 @@ recompiling.
 - Configuration files.
 - Structured, sampled logging.
 
-## Phase 6 — Scaling and state management  — NOT DONE
+## Phase 6 — Scaling and state management  — DONE
 
-*Why it is still open:* nothing here threatens correctness or safety, but all
-of it decides whether the chain is still operable in a year.
+- State pruning by mark and sweep from the roots worth keeping. Reference
+  counting would be cheaper, but one miscounted reference silently destroys
+  live state; a walk from the roots cannot be wrong about what is reachable.
+  A write barrier keeps it safe to run while blocks are still being imported.
+- Snapshot sync: a new node takes a finalized block from a peer and downloads
+  the state it commits to. Safe because of finality, not trust — the block
+  carries a quorum certificate, and every state node is checked against the
+  hash that referenced it.
+- Scheduled compaction, which is what actually returns disk after pruning
+  deletes records from an append-only log.
 
-- State pruning. Every historical trie node is kept forever, so disk grows
-  without bound. This is the item that eventually forces a decision.
-- Snapshot sync. A new node replays the entire chain from genesis, which gets
-  slower every day the network runs.
-- Scheduled database compaction. The store can compact but nothing calls it.
+Still open here: the pruner holds the reachable set in memory, which is fine
+at present scale and will not be for a very large state.
 
 ## Phase 7 — Validator set governance  — NOT DONE
 

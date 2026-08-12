@@ -178,3 +178,81 @@ func clone(b []byte) []byte {
 	copy(out, b)
 	return out
 }
+
+// TrackingDB records the keys written through it.
+//
+// A mark-and-sweep pruner needs this: anything written while it is deciding
+// what is reachable has not been marked, and deleting it would corrupt the
+// state that was just committed. Recording those writes lets the sweep skip
+// them instead.
+type TrackingDB struct {
+	Database
+
+	mu       sync.Mutex
+	tracking bool
+	written  map[string]struct{}
+}
+
+// NewTrackingDB wraps a database with write tracking, initially disabled.
+func NewTrackingDB(base Database) *TrackingDB {
+	return &TrackingDB{Database: base, written: make(map[string]struct{})}
+}
+
+// StartTracking begins recording writes, discarding anything recorded before.
+func (t *TrackingDB) StartTracking() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tracking = true
+	t.written = make(map[string]struct{})
+}
+
+// StopTracking stops recording and returns the keys written since tracking
+// began.
+func (t *TrackingDB) StopTracking() map[string]struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.tracking = false
+	out := t.written
+	t.written = make(map[string]struct{})
+	return out
+}
+
+// Written returns the keys recorded so far without stopping.
+func (t *TrackingDB) Written() map[string]struct{} {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make(map[string]struct{}, len(t.written))
+	for k := range t.written {
+		out[k] = struct{}{}
+	}
+	return out
+}
+
+func (t *TrackingDB) record(key []byte) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.tracking {
+		t.written[string(key)] = struct{}{}
+	}
+}
+
+func (t *TrackingDB) Put(key, value []byte) error {
+	t.record(key)
+	return t.Database.Put(key, value)
+}
+
+func (t *TrackingDB) NewBatch() Batch {
+	return &trackingBatch{Batch: t.Database.NewBatch(), tracker: t}
+}
+
+type trackingBatch struct {
+	Batch
+	tracker *TrackingDB
+}
+
+func (b *trackingBatch) Put(key, value []byte) error {
+	// Record at queue time rather than at write time: the pruner's sweep must
+	// treat a key as live from the moment a commit intends to write it.
+	b.tracker.record(key)
+	return b.Batch.Put(key, value)
+}

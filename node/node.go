@@ -55,6 +55,14 @@ type Config struct {
 	Validator *secp256k1.PrivateKey
 	Mine      bool
 
+	// Prune controls state pruning. A zero value uses the defaults; set
+	// Enabled to false to run as an archive node that keeps every state.
+	Prune chain.PruneConfig
+
+	// SnapSyncThreshold is how far behind the node must be before it prefers
+	// downloading state to replaying blocks. Zero uses the default.
+	SnapSyncThreshold uint64
+
 	Logger *slog.Logger
 }
 
@@ -77,6 +85,8 @@ type Node struct {
 	monitorListener net.Listener
 	builder         *miner.Builder
 	attestations    *consensus.AttestationPool
+	pruner          *chain.Pruner
+	snap            snapSync
 
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -157,6 +167,15 @@ func New(config *Config) (*Node, error) {
 	n.txpool = txpool.New(txpool.DefaultConfig(), genesis.ChainID, n)
 	n.attestations = consensus.NewAttestationPool(genesis.ChainID, genesis.Validators)
 
+	pruneConfig := config.Prune
+	if pruneConfig.Retain == 0 && pruneConfig.Interval == 0 && !pruneConfig.Enabled {
+		pruneConfig = *chain.DefaultPruneConfig()
+		config.Prune = pruneConfig
+	}
+	if pruneConfig.Enabled {
+		n.pruner = chain.NewPruner(bc, bc.Tracker(), &pruneConfig, config.Logger)
+	}
+
 	if config.Validator != nil {
 		n.builder = miner.NewBuilder(bc, engine, config.Validator)
 		n.builder.SetAttestationPool(n.attestations)
@@ -213,6 +232,13 @@ func (n *Node) BlockByHash(hash common.Hash) *core.Block {
 
 // HandleBlock imports a block announced by a peer.
 func (n *Node) HandleBlock(block *core.Block) error {
+	// While a snapshot sync is running the node has no state to execute
+	// against, and adopting the snapshot afterwards requires it to still be at
+	// genesis. Blocks are dropped rather than queued; the catch-up request
+	// after the sync finishes fetches them again.
+	if n.SnapSyncing() {
+		return errSnapSyncing
+	}
 	err := n.chain.InsertBlock(block)
 	switch {
 	case err == nil:
@@ -316,6 +342,9 @@ func (n *Node) attest(block *core.Block) {
 	}
 }
 
+// errSnapSyncing marks a block dropped because the node is downloading state.
+var errSnapSyncing = errors.New("node: snapshot sync in progress")
+
 // HandleTransactions imports transactions announced by a peer.
 func (n *Node) HandleTransactions(txs []*core.Transaction) {
 	for i, err := range n.txpool.AddBatch(txs) {
@@ -379,6 +408,9 @@ func (n *Node) Start() error {
 			return err
 		}
 	}
+
+	n.wg.Add(1)
+	go n.maintenanceLoop()
 
 	if n.config.Mine {
 		if n.builder == nil {

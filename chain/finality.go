@@ -7,6 +7,7 @@ import (
 	"layer1/common"
 	"layer1/core"
 	"layer1/db"
+	"layer1/state"
 )
 
 // Finality tracking.
@@ -147,5 +148,68 @@ func (bc *BlockChain) checkFinalityLocked(block *core.Block) error {
 		return fmt.Errorf("%w: %s does not descend from finalized %s at %d",
 			ErrConflictsWithFinalized, block.Hash(), final.Hash(), final.NumberU64())
 	}
+	return nil
+}
+
+// ImportSnapshot adopts a finalized block whose state was obtained by snapshot
+// sync rather than by executing the chain.
+//
+// This is the one path that installs a state root without executing anything,
+// so it is deliberately narrow: the block must be proved final by a quorum of
+// the validator set, the state it claims must already be present and complete
+// in the store, and the local chain must still be at genesis. A node with
+// history of its own has no business adopting someone else's head.
+func (bc *BlockChain) ImportSnapshot(block *core.Block, qc *core.QuorumCert) error {
+	if qc.IsEmpty() {
+		return core.ErrQuorumNotMet
+	}
+	if qc.BlockHash != block.Hash() || qc.Number != block.NumberU64() {
+		return fmt.Errorf("chain: the certificate does not name the offered block")
+	}
+	// The signatures are the whole basis for trusting this state.
+	if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err != nil {
+		return fmt.Errorf("chain: snapshot certificate: %w", err)
+	}
+
+	bc.mu.Lock()
+	defer bc.mu.Unlock()
+
+	if bc.current.NumberU64() != 0 {
+		return fmt.Errorf("chain: refusing to adopt a snapshot over %d blocks of local history", bc.current.NumberU64())
+	}
+	if block.NumberU64() == 0 {
+		return nil // the snapshot is genesis; nothing to do
+	}
+
+	// The state must actually be here. Adopting a head whose state is missing
+	// would leave the node unable to execute the next block.
+	statedb, err := state.New(block.StateRoot(), bc.store)
+	if err != nil {
+		return fmt.Errorf("chain: snapshot state %s is not available: %w", block.StateRoot(), err)
+	}
+	_ = statedb
+
+	batch := bc.store.NewBatch()
+	if err := WriteBlock(batch, block); err != nil {
+		return err
+	}
+	if err := WriteCanonicalHash(batch, block.NumberU64(), block.Hash()); err != nil {
+		return err
+	}
+	if err := WriteTxLookups(batch, block); err != nil {
+		return err
+	}
+	if err := WriteHeadBlockHash(batch, block.Hash()); err != nil {
+		return err
+	}
+	if err := WriteFinalizedHash(batch, block.Hash()); err != nil {
+		return err
+	}
+	if err := batch.Write(); err != nil {
+		return err
+	}
+
+	bc.current = block
+	bc.finalized = block
 	return nil
 }

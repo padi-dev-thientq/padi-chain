@@ -234,7 +234,8 @@ func (p *Peer) run() {
 func isBenignBlockError(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "already known") ||
-		strings.Contains(msg, "parent block is unknown")
+		strings.Contains(msg, "parent block is unknown") ||
+		strings.Contains(msg, "snapshot sync in progress")
 }
 
 func (p *Peer) handle(code MessageCode, payload []byte) error {
@@ -400,6 +401,58 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 		for _, addr := range announced.Addresses {
 			p.server.addresses.add(addr)
 		}
+		return nil
+
+	case MsgGetSnapshot:
+		block, qc := backend.LocalSnapshot()
+		if block == nil || qc == nil {
+			return nil // nothing finalized worth offering
+		}
+		encoded, err := block.MarshalBinary()
+		if err != nil {
+			return err
+		}
+		cert, err := qc.Encode()
+		if err != nil {
+			return err
+		}
+		return p.Send(MsgSnapshot, &SnapshotPayload{Block: encoded, Certificate: cert})
+
+	case MsgSnapshot:
+		var offer SnapshotPayload
+		if err := decodePayload(payload, &offer); err != nil {
+			return err
+		}
+		block := new(core.Block)
+		if err := block.UnmarshalBinary(offer.Block); err != nil {
+			return err
+		}
+		qc, err := core.DecodeQuorumCert(offer.Certificate)
+		if err != nil {
+			return err
+		}
+		backend.HandleSnapshot(block, qc)
+		return nil
+
+	case MsgGetStateNodes:
+		var request StateNodesRequest
+		if err := decodePayload(payload, &request); err != nil {
+			return err
+		}
+		if len(request.Hashes) > MaxStateNodesPerMessage {
+			request.Hashes = request.Hashes[:MaxStateNodesPerMessage]
+		}
+		return p.Send(MsgStateNodes, &StateNodesPayload{Nodes: backend.ServeStateNodes(request.Hashes)})
+
+	case MsgStateNodes:
+		var response StateNodesPayload
+		if err := decodePayload(payload, &response); err != nil {
+			return err
+		}
+		if len(response.Nodes) > MaxStateNodesPerMessage {
+			return fmt.Errorf("p2p: %d state nodes exceeds the per-message limit", len(response.Nodes))
+		}
+		backend.HandleStateNodes(response.Nodes)
 		return nil
 
 	case MsgDisconnect:

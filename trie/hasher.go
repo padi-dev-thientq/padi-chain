@@ -273,3 +273,35 @@ func decodeRef(item []byte) (node, error) {
 		return hashNode(b), nil
 	}
 }
+
+// NodeReferences parses a stored node encoding and reports what it points at:
+// the hashes of child nodes held elsewhere in the store, and the values of any
+// leaves it carries directly.
+//
+// A syncing node uses this to walk a trie it does not have: fetch a node,
+// learn which nodes it references, fetch those, and repeat.
+func NodeReferences(enc []byte) (children []common.Hash, values [][]byte, err error) {
+	n, err := decodeNode(nil, enc)
+	if err != nil {
+		return nil, nil, err
+	}
+	collectReferences(n, &children, &values)
+	return children, values, nil
+}
+
+func collectReferences(n node, children *[]common.Hash, values *[][]byte) {
+	switch n := n.(type) {
+	case *shortNode:
+		collectReferences(n.value, children, values)
+	case *fullNode:
+		for _, child := range &n.children {
+			if child != nil {
+				collectReferences(child, children, values)
+			}
+		}
+	case hashNode:
+		*children = append(*children, common.BytesToHash(n))
+	case valueNode:
+		*values = append(*values, common.CopyBytes(n))
+	}
+}

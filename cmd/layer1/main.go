@@ -273,6 +273,8 @@ func cmdRun(args []string) error {
 	passphrase := fs.String("password", "", "passphrase to unlock the validator key")
 	nodeName := fs.String("name", "layer1", "node name announced to peers")
 	logLevel := fs.String("log", "info", "log level: debug, info, warn, error")
+	archive := fs.Bool("archive", false, "keep every historical state instead of pruning")
+	retain := fs.Uint64("retain", 256, "how many recent blocks' states to keep when pruning")
 	fs.Parse(args)
 
 	log := newLogger(*logLevel)
@@ -285,6 +287,11 @@ func cmdRun(args []string) error {
 		NodeName:    *nodeName,
 		Mine:        *mine,
 		Logger:      log,
+		Prune: chain.PruneConfig{
+			Enabled:  !*archive,
+			Retain:   *retain,
+			Interval: 10 * time.Minute,
+		},
 	}
 	if *bootstrap != "" {
 		for _, peer := range strings.Split(*bootstrap, ",") {

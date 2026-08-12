@@ -28,6 +28,8 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
   the proposer.
 - Connects peers over authenticated, encrypted links with forward secrecy, scores their
   behaviour, and discovers new ones by peer exchange.
+- Starts a new node from a finalized snapshot rather than replaying the chain, and prunes
+  the state no retained block still references.
 - Answers the standard Ethereum JSON-RPC methods under per-client rate limits, and
   exposes Prometheus metrics and health checks for operators.
 
@@ -57,6 +59,7 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
 | `rpc` | JSON-RPC 2.0 server, the `eth`/`net`/`web3` namespaces, admission control |
 | `metrics` | Counters, gauges and histograms in Prometheus format |
 | `keystore` | V3 encrypted key files (PBKDF2-HMAC-SHA256, AES-128-CTR, Keccak MAC) |
+| `statesync` | Downloading a state trie from peers instead of replaying blocks |
 | `node` | Wires everything into a running process |
 | `cmd/layer1` | Command-line interface |
 
@@ -97,10 +100,20 @@ rounds actually lapsed — so a validator cannot seize a turn that is not yet fo
 **Peers are identified by key, not address.** Reputation follows the node key, so a
 misbehaving peer cannot shed its record by reconnecting from somewhere else.
 
+**Synced state is checked, not trusted.** The trie is content-addressed, so a syncing
+node asks for a specific hash and discards anything that does not hash to it. A hostile
+peer can refuse to answer; it cannot substitute state. The only thing established out of
+band is the root, and that comes with a quorum certificate.
+
+**Pruning walks, it does not count.** Reference counting would be cheaper, but a single
+miscounted reference silently destroys state that is still in use. A mark from the
+retained roots cannot be wrong about what is reachable, and a write barrier makes it
+safe to run while blocks are still arriving.
+
 ## Testing
 
 ```
-$ go test ./...           # 401 tests
+$ go test ./...           # 418 tests
 $ go test -race ./...
 ```
 
@@ -123,6 +136,7 @@ production and finality carry on without it.
 layer1 init      -datadir ./data [-chainid N] [-validators ...] [-alloc addr=wei,...]
 layer1 account   new | list | import -key <hex>
 layer1 run       -datadir ./data [-mine -validator <addr>] [-rpc host:port] [-peers ...]
+                 [-archive] [-retain N] [-monitor host:port]
 layer1 send      -from <addr> -to <addr> -value <wei> [-data <hex>]
 layer1 call      -to <addr> -data <hex>
 layer1 balance   <address>
@@ -131,15 +145,12 @@ layer1 status
 
 ## Scope
 
-[ROADMAP.md](ROADMAP.md) tracks the path to production. Five of its eight phases are
+[ROADMAP.md](ROADMAP.md) tracks the path to production. Six of its eight phases are
 done: consensus finality and liveness, network security, denial-of-service resistance,
-EVM equivalence, and operations.
+EVM equivalence, operations, and state management.
 
 What remains, stated plainly:
 
-- **State grows without bound.** Every historical trie node is kept forever, and a new
-  node replays the chain from genesis. Neither is a correctness problem; both decide
-  whether the chain is still operable in a year.
 - **The validator set is fixed at genesis.** Equivocation is detected, proved and
   gossiped, but nothing acts on the proof — there is no stake to slash and no mechanism
   to rotate the set. Choosing one is a decision about what the network is for.
