@@ -366,3 +366,11 @@ func (k *PrivateKey) Zeroize() {
 }
 
 var _ = zero
+
+// IsLowS reports whether s is in the canonical lower half of the group order.
+// Only low-s signatures are accepted on this chain: the mirrored high-s form is
+// equally valid mathematically, so allowing it would let anyone alter a signed
+// transaction's hash without the key.
+func IsLowS(s *big.Int) bool {
+	return s != nil && s.Sign() > 0 && s.Cmp(halfN) <= 0
+}

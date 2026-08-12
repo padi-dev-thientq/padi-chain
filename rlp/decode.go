@@ -423,7 +423,23 @@ func (s *Stream) decodeStruct(v reflect.Value) error {
 			}
 			return fmt.Errorf("%w: missing %s.%s", ErrTooFewFields, v.Type(), f.name)
 		}
-		if err := inner.decodeValue(v.Field(f.index)); err != nil {
+		field := v.Field(f.index)
+		if f.nilOK && field.Kind() == reflect.Ptr {
+			// An empty item stands for "absent" on a nil-able field, which is
+			// how an optional recipient (contract creation) is encoded.
+			kind, size, err := inner.Kind()
+			if err != nil {
+				return fmt.Errorf("field %s: %w", f.name, err)
+			}
+			if size == 0 && kind != Byte {
+				if _, err := inner.Raw(); err != nil {
+					return fmt.Errorf("field %s: %w", f.name, err)
+				}
+				field.Set(reflect.Zero(field.Type()))
+				continue
+			}
+		}
+		if err := inner.decodeValue(field); err != nil {
 			return fmt.Errorf("field %s: %w", f.name, err)
 		}
 	}
