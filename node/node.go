@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"layer1/crypto/secp256k1"
 	"layer1/db"
 	"layer1/keystore"
+	"layer1/metrics"
 	"layer1/miner"
 	"layer1/p2p"
 	"layer1/rpc"
@@ -40,9 +43,12 @@ type Config struct {
 
 	ListenAddr string
 	RPCAddr    string
-	Bootstrap  []string
-	MaxPeers   int
-	NodeName   string
+	// MonitorAddr serves metrics and health checks, on its own listener so it
+	// stays reachable when the RPC port is saturated.
+	MonitorAddr string
+	Bootstrap   []string
+	MaxPeers    int
+	NodeName    string
 
 	// Validator is the key this node seals blocks with. Without it the node
 	// follows the chain but never proposes.
@@ -64,10 +70,13 @@ type Node struct {
 	txpool   *txpool.TxPool
 	keystore *keystore.KeyStore
 
-	network      *p2p.Server
-	rpc          *rpc.Server
-	builder      *miner.Builder
-	attestations *consensus.AttestationPool
+	network         *p2p.Server
+	rpc             *rpc.Server
+	metrics         *metrics.NodeMetrics
+	monitorServer   *http.Server
+	monitorListener net.Listener
+	builder         *miner.Builder
+	attestations    *consensus.AttestationPool
 
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -137,6 +146,7 @@ func New(config *Config) (*Node, error) {
 	n := &Node{
 		config:   config,
 		nodeKey:  nodeKey,
+		metrics:  metrics.NewNodeMetrics(),
 		log:      config.Logger,
 		store:    store,
 		chain:    bc,
@@ -206,6 +216,8 @@ func (n *Node) HandleBlock(block *core.Block) error {
 	err := n.chain.InsertBlock(block)
 	switch {
 	case err == nil:
+		n.metrics.BlocksImported.Inc()
+		n.metrics.BlockGasUsed.Observe(float64(block.GasUsed()))
 		n.txpool.Reset(block.Transactions())
 		n.log.Info("imported block", "number", block.NumberU64(), "hash", block.Hash(), "txs", len(block.Transactions()))
 		n.attest(block)
@@ -216,6 +228,7 @@ func (n *Node) HandleBlock(block *core.Block) error {
 		// The block is ahead of us; the peer sync loop will fill the gap.
 		return err
 	default:
+		n.metrics.BlocksRejected.Inc()
 		n.log.Warn("rejected block from peer", "number", block.NumberU64(), "hash", block.Hash(), "err", err)
 		return err
 	}
@@ -233,6 +246,7 @@ func (n *Node) HandleAttestations(attestations []*core.Attestation) {
 			if errors.Is(err, consensus.ErrEquivocation) {
 				// A validator voting two ways is the one fault that can break
 				// finality, so it is logged loudly and the proof is spread.
+				n.metrics.Equivocations.Inc()
 				n.log.Error("equivocation detected", "height", attestation.Number, "err", err)
 				if n.network != nil {
 					n.network.BroadcastEvidence(n.attestations.Evidence())
@@ -241,6 +255,7 @@ func (n *Node) HandleAttestations(attestations []*core.Attestation) {
 			continue
 		}
 		if added {
+			n.metrics.AttestationsSeen.Inc()
 			n.tryFinalize(attestation.Number, attestation.BlockHash)
 		}
 	}
@@ -301,7 +316,12 @@ func (n *Node) attest(block *core.Block) {
 // HandleTransactions imports transactions announced by a peer.
 func (n *Node) HandleTransactions(txs []*core.Transaction) {
 	for i, err := range n.txpool.AddBatch(txs) {
-		if err != nil && !errors.Is(err, txpool.ErrAlreadyKnown) {
+		if err == nil {
+			n.metrics.TxAccepted.Inc()
+			continue
+		}
+		n.metrics.TxRejected.Inc()
+		if !errors.Is(err, txpool.ErrAlreadyKnown) {
 			n.log.Debug("rejected transaction from peer", "hash", txs[i].Hash(), "err", err)
 		}
 	}
@@ -349,6 +369,12 @@ func (n *Node) Start() error {
 				}
 			}
 		}()
+	}
+
+	if n.config.MonitorAddr != "" {
+		if err := n.startMonitoring(n.config.MonitorAddr); err != nil {
+			return err
+		}
 	}
 
 	if n.config.Mine {
@@ -420,6 +446,8 @@ func (n *Node) tryPropose() {
 		return
 	}
 
+	n.metrics.BlocksProduced.Inc()
+	n.metrics.BlockGasUsed.Observe(float64(result.Block.GasUsed()))
 	n.txpool.Reset(result.Included)
 	n.log.Info("sealed block",
 		"number", result.Block.NumberU64(),
@@ -440,6 +468,9 @@ func (n *Node) Stop() error {
 	var err error
 	n.quitOnce.Do(func() {
 		close(n.quit)
+		if n.monitorServer != nil {
+			n.monitorServer.Close()
+		}
 		if n.rpc != nil {
 			n.rpc.Stop()
 		}

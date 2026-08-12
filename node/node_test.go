@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -613,5 +614,96 @@ func TestNodeRestartResumesChain(t *testing.T) {
 	}
 	if got := second.Chain().GetBlockByNumber(height).Hash(); got != hash {
 		t.Fatalf("block %d is %s after restart, want %s", height, got, hash)
+	}
+}
+
+func TestMonitoringEndpoints(t *testing.T) {
+	key, addr := devKey(t, 1)
+	n := startNode(t, &node.Config{
+		DataDir:     t.TempDir(),
+		Genesis:     newGenesis(addr),
+		Validator:   key,
+		Mine:        true,
+		MonitorAddr: "127.0.0.1:0",
+		Logger:      quietLogger(),
+	})
+
+	waitFor(t, 10*time.Second, "a block to be produced", func() bool {
+		return n.Chain().CurrentBlock().NumberU64() >= 1
+	})
+
+	base := "http://" + n.MonitoringAddr()
+
+	t.Run("liveness", func(t *testing.T) {
+		resp, err := http.Get(base + "/health/live")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("liveness returned %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("readiness", func(t *testing.T) {
+		resp, err := http.Get(base + "/health/ready")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("a node producing blocks reported unready: %d", resp.StatusCode)
+		}
+		var status map[string]any
+		json.NewDecoder(resp.Body).Decode(&status)
+		if status["ready"] != true {
+			t.Fatalf("readiness = %v", status)
+		}
+	})
+
+	t.Run("metrics", func(t *testing.T) {
+		resp, err := http.Get(base + "/metrics")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		body, _ := io.ReadAll(resp.Body)
+		text := string(body)
+
+		for _, want := range []string{
+			"layer1_chain_head",
+			"layer1_chain_finalized",
+			"layer1_blocks_produced_total",
+			"layer1_peers",
+			"layer1_txpool_pending",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("metric %s is missing from the scrape", want)
+			}
+		}
+	})
+}
+
+func TestReadinessReportsAStalledChain(t *testing.T) {
+	_, addr := devKey(t, 1)
+	// A node with no validator key never produces blocks, so its head goes
+	// stale and it must take itself out of rotation.
+	genesis := newGenesis(addr)
+	genesis.Timestamp = uint64(time.Now().Add(-24 * time.Hour).Unix())
+
+	n := startNode(t, &node.Config{
+		DataDir:     t.TempDir(),
+		Genesis:     genesis,
+		MonitorAddr: "127.0.0.1:0",
+		Logger:      quietLogger(),
+	})
+
+	resp, err := http.Get("http://" + n.MonitoringAddr() + "/health/ready")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("a node whose head is a day old reported ready (status %d)", resp.StatusCode)
 	}
 }

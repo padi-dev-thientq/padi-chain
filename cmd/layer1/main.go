@@ -266,6 +266,7 @@ func cmdRun(args []string) error {
 	dataDir := fs.String("datadir", "./data", "data directory")
 	listenAddr := fs.String("addr", "0.0.0.0:30303", "p2p listen address (empty to disable)")
 	rpcAddr := fs.String("rpc", "127.0.0.1:8545", "JSON-RPC listen address (empty to disable)")
+	monitorAddr := fs.String("monitor", "127.0.0.1:6060", "metrics and health listen address (empty to disable)")
 	bootstrap := fs.String("peers", "", "comma-separated bootstrap peer addresses")
 	mine := fs.Bool("mine", false, "produce blocks when it is this validator's turn")
 	validator := fs.String("validator", "", "validator address to seal with")
@@ -277,12 +278,13 @@ func cmdRun(args []string) error {
 	log := newLogger(*logLevel)
 
 	config := &node.Config{
-		DataDir:    *dataDir,
-		ListenAddr: *listenAddr,
-		RPCAddr:    *rpcAddr,
-		NodeName:   *nodeName,
-		Mine:       *mine,
-		Logger:     log,
+		DataDir:     *dataDir,
+		ListenAddr:  *listenAddr,
+		RPCAddr:     *rpcAddr,
+		MonitorAddr: *monitorAddr,
+		NodeName:    *nodeName,
+		Mine:        *mine,
+		Logger:      log,
 	}
 	if *bootstrap != "" {
 		for _, peer := range strings.Split(*bootstrap, ",") {
