@@ -68,14 +68,41 @@ type Server struct {
 	MaxBodySize int64
 	// MaxBatchSize caps how many calls one request may contain.
 	MaxBatchSize int
+
+	limiter  *limiter
+	quit     chan struct{}
+	quitOnce sync.Once
 }
 
 // NewServer creates an empty RPC server.
 func NewServer() *Server {
-	return &Server{
+	return NewServerWithLimits(DefaultLimits())
+}
+
+// NewServerWithLimits creates a server with explicit resource limits.
+func NewServerWithLimits(limits *Limits) *Server {
+	s := &Server{
 		handlers:     make(map[string]Handler),
 		MaxBodySize:  5 * 1024 * 1024,
 		MaxBatchSize: 100,
+		limiter:      newLimiter(limits),
+		quit:         make(chan struct{}),
+	}
+	go s.sweepLoop()
+	return s
+}
+
+// sweepLoop expires idle client budgets.
+func (s *Server) sweepLoop() {
+	ticker := time.NewTicker(time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.quit:
+			return
+		case <-ticker.C:
+			s.limiter.sweep()
+		}
 	}
 }
 
@@ -126,6 +153,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	trimmed := strings.TrimSpace(string(body))
 	w.Header().Set("Content-Type", "application/json")
+	client := clientKey(r)
 
 	// A leading bracket means a batch of calls.
 	if strings.HasPrefix(trimmed, "[") {
@@ -138,9 +166,19 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, errorResponse(nil, NewError(CodeInvalidRequest, "batch of %d exceeds the limit of %d", len(batch), s.MaxBatchSize)))
 			return
 		}
+		// A batch is charged for every call it contains, so batching cannot be
+		// used to slip past the per-call budget.
+		var total float64
+		for i := range batch {
+			total += costOf(batch[i].Method)
+		}
+		if !s.limiter.allow(client, total) {
+			writeJSON(w, http.StatusTooManyRequests, errorResponse(nil, NewError(CodeInvalidRequest, "rate limit exceeded")))
+			return
+		}
 		responses := make([]Response, 0, len(batch))
 		for i := range batch {
-			responses = append(responses, s.dispatch(&batch[i]))
+			responses = append(responses, s.serve(&batch[i]))
 		}
 		writeJSON(w, http.StatusOK, responses)
 		return
@@ -151,7 +189,24 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, errorResponse(nil, NewError(CodeParseError, "malformed request: %v", err)))
 		return
 	}
-	writeJSON(w, http.StatusOK, s.dispatch(&req))
+	if !s.limiter.allow(client, costOf(req.Method)) {
+		writeJSON(w, http.StatusTooManyRequests, errorResponse(req.ID, NewError(CodeInvalidRequest, "rate limit exceeded")))
+		return
+	}
+	writeJSON(w, http.StatusOK, s.serve(&req))
+}
+
+// serve runs one call under the concurrency cap.
+func (s *Server) serve(req *Request) Response {
+	if !s.limiter.acquire() {
+		return Response{
+			Version: "2.0",
+			ID:      req.ID,
+			Error:   NewError(CodeInternalError, "the node is at capacity, try again shortly"),
+		}
+	}
+	defer s.limiter.release()
+	return s.dispatch(req)
 }
 
 // dispatch runs one call, converting a panic in a handler into an error rather
@@ -238,6 +293,7 @@ func (s *Server) Addr() string {
 
 // Stop shuts the server down.
 func (s *Server) Stop() error {
+	s.quitOnce.Do(func() { close(s.quit) })
 	if s.http == nil {
 		return nil
 	}
