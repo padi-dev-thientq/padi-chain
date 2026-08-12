@@ -85,6 +85,9 @@ type Server struct {
 
 	// scores tracks peer behaviour so misbehaving nodes can be shed.
 	scores *scoreboard
+
+	// addresses is where peers learned from other peers are remembered.
+	addresses *addressBook
 }
 
 // NewServer creates a network server.
@@ -93,13 +96,14 @@ func NewServer(config *Config, backend Backend, log *slog.Logger) *Server {
 		log = slog.Default()
 	}
 	return &Server{
-		config:  config,
-		backend: backend,
-		log:     log,
-		peers:   make(map[string]*Peer),
-		quit:    make(chan struct{}),
-		seen:    newSeenCache(8192),
-		scores:  newScoreboard(),
+		config:    config,
+		backend:   backend,
+		log:       log,
+		peers:     make(map[string]*Peer),
+		quit:      make(chan struct{}),
+		seen:      newSeenCache(8192),
+		scores:    newScoreboard(),
+		addresses: newAddressBook(1024),
 	}
 }
 
@@ -117,9 +121,13 @@ func (s *Server) Start() error {
 	}
 
 	for _, addr := range s.config.Bootstrap {
+		s.addresses.add(addr)
 		s.wg.Add(1)
 		go s.dialLoop(addr)
 	}
+
+	s.wg.Add(1)
+	go s.discoveryLoop()
 	return nil
 }
 

@@ -306,6 +306,9 @@ func (n *Node) attest(block *core.Block) {
 		n.log.Error("recording own attestation", "err", err)
 		return
 	}
+	// Count our own vote like any other: otherwise the metric reads zero on a
+	// node that is attesting perfectly well.
+	n.metrics.AttestationsSeen.Inc()
 	n.tryFinalize(block.NumberU64(), block.Hash())
 
 	if n.network != nil {

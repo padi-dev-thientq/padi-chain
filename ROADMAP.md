@@ -4,7 +4,7 @@ The chain in this repository is complete and correct as a protocol implementatio
 What follows is what stands between it and a network that can safely hold value.
 Ordered by what breaks worst if it is missing.
 
-## Phase 1 — Consensus safety and liveness  (BLOCKING)
+## Phase 1 — Consensus safety and liveness  — DONE
 
 *The gap:* round-robin proof of authority has no finality and no fault tolerance.
 A single offline validator stalls the chain at its slot forever. Two validators
@@ -19,7 +19,7 @@ history can be reorganised away.
   chain.
 - Equivocation detection producing slashable evidence.
 
-## Phase 2 — Network security  (BLOCKING)
+## Phase 2 — Network security  — DONE
 
 *The gap:* peer connections are plaintext TCP with no peer identity. Anyone on the
 path can read, modify or inject blocks and transactions.
@@ -29,7 +29,7 @@ path can read, modify or inject blocks and transactions.
 - Peer scoring and banning; per-peer rate limits.
 - Peer exchange so the network survives bootstrap nodes going away.
 
-## Phase 3 — Denial of service resistance  (BLOCKING)
+## Phase 3 — Denial of service resistance  — DONE
 
 *The gap:* a single client can exhaust the node.
 
@@ -37,14 +37,14 @@ path can read, modify or inject blocks and transactions.
 - Bounded queues everywhere; backpressure instead of unbounded growth.
 - Resource limits on block and transaction validation.
 
-## Phase 4 — EVM equivalence
+## Phase 4 — EVM equivalence  — DONE
 
 *The gap:* missing precompiles mean some real contracts cannot run.
 
 - `ripemd160`, `blake2f`, and the BN254 curve precompiles (`ecAdd`, `ecMul`,
   `ecPairing`) that zk-SNARK verifiers depend on.
 
-## Phase 5 — Operations
+## Phase 5 — Operations  — DONE
 
 *The gap:* an operator cannot see what the node is doing or tune it without
 recompiling.
@@ -53,19 +53,36 @@ recompiling.
 - Configuration files.
 - Structured, sampled logging.
 
-## Phase 6 — Scaling and state management
+## Phase 6 — Scaling and state management  — NOT DONE
 
-- State pruning; the node currently keeps every historical state node forever.
-- Snapshot sync so a new node does not replay the whole chain.
-- Database compaction scheduling.
+*Why it is still open:* nothing here threatens correctness or safety, but all
+of it decides whether the chain is still operable in a year.
 
-## Phase 7 — Validator set governance
+- State pruning. Every historical trie node is kept forever, so disk grows
+  without bound. This is the item that eventually forces a decision.
+- Snapshot sync. A new node replays the entire chain from genesis, which gets
+  slower every day the network runs.
+- Scheduled database compaction. The store can compact but nothing calls it.
 
-- On-chain staking, validator set changes, and slashing execution.
+## Phase 7 — Validator set governance  — NOT DONE
 
-## Phase 8 — What code cannot deliver
+*Why it is still open:* the right answer depends on what the network is for,
+and picking one unilaterally would be the wrong call.
 
-- Independent security audit.
-- A public testnet run long enough to find what tests do not.
+The validator set is fixed at genesis. Equivocation is detected, proved and
+gossiped, but nothing acts on the proof — there is no stake to slash and no
+mechanism to remove a validator. Adding one means choosing between a
+permissioned set with governance-controlled membership and an open
+proof-of-stake set, which is a decision about the network, not about the code.
+
+## Phase 8 — What code cannot deliver  — NOT DONE
+
+No amount of implementation substitutes for these.
+
+- An independent security audit. Everything above is tested against its own
+  author's understanding of what could go wrong, which is exactly the blind
+  spot an audit exists to cover.
+- A public testnet run long enough to surface what tests do not: clock skew,
+  partitions, disk exhaustion, the failure that only happens at 3am on day 40.
 - A bug bounty, an incident response plan, and a disclosure policy.
 - Reproducible builds and signed releases.

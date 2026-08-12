@@ -32,6 +32,8 @@ const (
 	MsgDisconnect
 	MsgAttestations
 	MsgEvidence
+	MsgGetAddresses
+	MsgAddresses
 )
 
 var messageNames = map[MessageCode]string{
@@ -46,6 +48,8 @@ var messageNames = map[MessageCode]string{
 	MsgDisconnect:      "disconnect",
 	MsgAttestations:    "attestations",
 	MsgEvidence:        "evidence",
+	MsgGetAddresses:    "getAddresses",
+	MsgAddresses:       "addresses",
 }
 
 func (c MessageCode) String() string {

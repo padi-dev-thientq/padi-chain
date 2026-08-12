@@ -382,6 +382,26 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 		}
 		return nil
 
+	case MsgGetAddresses:
+		addresses := p.server.KnownAddresses()
+		if p.server.listener != nil {
+			addresses = append(addresses, p.server.listener.Addr().String())
+		}
+		return p.Send(MsgAddresses, &AddressesPayload{Addresses: addresses})
+
+	case MsgAddresses:
+		var announced AddressesPayload
+		if err := decodePayload(payload, &announced); err != nil {
+			return err
+		}
+		if len(announced.Addresses) > MaxAddressesPerMessage {
+			return fmt.Errorf("p2p: %d addresses exceeds the per-message limit", len(announced.Addresses))
+		}
+		for _, addr := range announced.Addresses {
+			p.server.addresses.add(addr)
+		}
+		return nil
+
 	case MsgDisconnect:
 		var reason DisconnectReason
 		decodePayload(payload, &reason)
