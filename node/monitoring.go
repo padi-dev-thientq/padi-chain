@@ -44,6 +44,34 @@ func (n *Node) startMonitoring(addr string) error {
 		json.NewEncoder(w).Encode(status)
 	})
 
+	// Manual prune. This lives on the monitoring listener rather than the
+	// public RPC deliberately: it is expensive, and an operator port is the
+	// right place for something an operator does on purpose.
+	mux.HandleFunc("/admin/prune", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "use POST", http.StatusMethodNotAllowed)
+			return
+		}
+		if n.pruner == nil {
+			http.Error(w, "pruning is disabled on this node", http.StatusConflict)
+			return
+		}
+		stats, err := n.pruner.Run()
+		w.Header().Set("Content-Type", "application/json")
+		if err != nil {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{
+			"deleted":    stats.Deleted,
+			"reachable":  stats.Reachable,
+			"roots":      stats.Roots,
+			"skipped":    stats.Skipped,
+			"durationMs": stats.Duration.Milliseconds(),
+		})
+	})
+
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("node: monitoring listener on %s: %w", addr, err)

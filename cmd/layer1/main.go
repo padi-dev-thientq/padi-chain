@@ -41,6 +41,7 @@ Commands:
   call       Make a read-only contract call through a node's RPC
   balance    Print an account balance
   status     Print a node's chain status
+  prune      Ask a running node to prune its state now
   version    Print the version
 
 Run "layer1 <command> -h" for the flags of a command.
@@ -68,6 +69,8 @@ func main() {
 		err = cmdBalance(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "prune":
+		err = cmdPrune(os.Args[2:])
 	case "version":
 		fmt.Println(node.Version)
 	case "-h", "--help", "help":
@@ -605,6 +608,37 @@ func cmdStatus(args []string) error {
 	if pool, ok := info["txpool"].(map[string]any); ok {
 		fmt.Printf("txpool:   %v pending, %v queued\n", pool["pending"], pool["queued"])
 	}
+	return nil
+}
+
+func cmdPrune(args []string) error {
+	fs := flag.NewFlagSet("prune", flag.ExitOnError)
+	monitor := fs.String("monitor", "http://127.0.0.1:6060", "node monitoring endpoint")
+	fs.Parse(args)
+
+	resp, err := http.Post(*monitor+"/admin/prune", "application/json", nil)
+	if err != nil {
+		return fmt.Errorf("calling %s: %w", *monitor, err)
+	}
+	defer resp.Body.Close()
+
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("%s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+
+	var stats struct {
+		Deleted    int   `json:"deleted"`
+		Reachable  int   `json:"reachable"`
+		Roots      int   `json:"roots"`
+		Skipped    int   `json:"skipped"`
+		DurationMs int64 `json:"durationMs"`
+	}
+	if err := json.Unmarshal(body, &stats); err != nil {
+		return err
+	}
+	fmt.Printf("deleted %d entries, %d reachable across %d roots (%d skipped) in %dms\n",
+		stats.Deleted, stats.Reachable, stats.Roots, stats.Skipped, stats.DurationMs)
 	return nil
 }
 
