@@ -1,9 +1,8 @@
 package p2p
 
 import (
-	"bufio"
 	"fmt"
-	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,16 +12,15 @@ import (
 
 // Peer is one connected node.
 type Peer struct {
-	conn    net.Conn
+	conn    *secureConn
 	server  *Server
 	inbound bool
 
-	reader *bufio.Reader
-	writer *bufio.Writer
+	// id is the peer's cryptographically authenticated identity, established
+	// by the handshake before any protocol message is exchanged.
+	id NodeID
 
-	writeMu sync.Mutex
-
-	// status is the peer's handshake, fixed for the life of the connection.
+	// status is the peer's protocol handshake, fixed for the life of the connection.
 	status Status
 
 	// head tracks the peer's latest announced block.
@@ -34,26 +32,33 @@ type Peer struct {
 	// back to its source.
 	seen *seenCache
 
+	// limiter caps how fast this peer may send, so one connection cannot
+	// saturate the node.
+	limiter *rateLimiter
+
 	closeOnce sync.Once
 	closed    chan struct{}
 }
 
-func newPeer(conn net.Conn, server *Server, inbound bool) *Peer {
+func newPeer(conn *secureConn, server *Server, inbound bool) *Peer {
 	return &Peer{
 		conn:    conn,
 		server:  server,
 		inbound: inbound,
-		reader:  bufio.NewReaderSize(conn, 64*1024),
-		writer:  bufio.NewWriterSize(conn, 64*1024),
+		id:      conn.RemoteID(),
 		seen:    newSeenCache(4096),
+		limiter: newRateLimiter(200, 50),
 		closed:  make(chan struct{}),
 	}
 }
 
-// ID identifies the peer by its remote address and node name.
-func (p *Peer) ID() string {
-	return fmt.Sprintf("%s@%s", p.status.NodeName, p.conn.RemoteAddr().String())
-}
+// ID returns the peer's authenticated identity. Identity comes from the node
+// key rather than the network address, so a peer cannot shed a bad reputation
+// by reconnecting from somewhere else.
+func (p *Peer) ID() string { return p.id.String() }
+
+// NodeID returns the peer's full public identity.
+func (p *Peer) NodeID() NodeID { return p.id }
 
 // RemoteAddr returns the peer's address.
 func (p *Peer) RemoteAddr() string { return p.conn.RemoteAddr().String() }
@@ -104,7 +109,7 @@ func (p *Peer) handshake() error {
 		return err
 	}
 
-	code, payload, err := readMessage(p.reader)
+	code, payload, err := p.conn.readFrame()
 	if err != nil {
 		return err
 	}
@@ -145,11 +150,8 @@ func (p *Peer) Send(code MessageCode, payload any) error {
 	return p.sendRaw(code, enc)
 }
 
-// sendRaw writes an already-encoded payload.
+// sendRaw encrypts and writes an already-encoded payload.
 func (p *Peer) sendRaw(code MessageCode, payload []byte) error {
-	p.writeMu.Lock()
-	defer p.writeMu.Unlock()
-
 	select {
 	case <-p.closed:
 		return errServerStopped
@@ -157,11 +159,7 @@ func (p *Peer) sendRaw(code MessageCode, payload []byte) error {
 	}
 
 	p.conn.SetWriteDeadline(time.Now().Add(30 * time.Second))
-	if err := writeMessage(p.writer, code, payload); err != nil {
-		p.Close()
-		return err
-	}
-	if err := p.writer.Flush(); err != nil {
+	if err := p.conn.writeFrame(code, payload); err != nil {
 		p.Close()
 		return err
 	}
@@ -212,15 +210,31 @@ func (p *Peer) run() {
 		// A peer that says nothing for long enough is dropped; the ping loop
 		// guarantees a healthy peer always has something to say.
 		p.conn.SetReadDeadline(time.Now().Add(3 * p.server.config.PingInterval))
-		code, payload, err := readMessage(p.reader)
+		code, payload, err := p.conn.readFrame()
 		if err != nil {
+			return
+		}
+		// Charge larger messages more, so a peer cannot stay within the
+		// message rate while flooding bytes.
+		cost := 1.0 + float64(len(payload))/65536.0
+		if !p.limiter.allowN(cost) {
+			p.server.penalise(p.id, penaltyFlood, "exceeded the message rate limit")
 			return
 		}
 		if err := p.handle(code, payload); err != nil {
 			p.server.log.Debug("p2p message handling failed", "peer", p.ID(), "code", code, "err", err)
+			p.server.penalise(p.id, penaltyBadMessage, err.Error())
 			return
 		}
 	}
+}
+
+// isBenignBlockError reports whether a rejected block reflects normal
+// out-of-order delivery rather than misbehaviour.
+func isBenignBlockError(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "already known") ||
+		strings.Contains(msg, "parent block is unknown")
 }
 
 func (p *Peer) handle(code MessageCode, payload []byte) error {
@@ -256,9 +270,14 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 			p.setHead(block.Hash(), block.NumberU64())
 
 			if err := backend.HandleBlock(block); err != nil {
-				// An invalid or already-known block is not a protocol
-				// violation, so the connection stays up.
-				p.server.log.Debug("p2p block rejected", "peer", p.ID(), "number", block.NumberU64(), "err", err)
+				// A block we already have, or one whose parent has not
+				// arrived yet, is ordinary. A block that fails verification is
+				// not: only a faulty or hostile peer sends one.
+				if !isBenignBlockError(err) {
+					p.server.penalise(p.id, penaltyInvalidBlock, "sent an invalid block")
+					return err
+				}
+				p.server.log.Debug("p2p block not applied", "peer", p.ID(), "number", block.NumberU64(), "err", err)
 				continue
 			}
 			// Relay only blocks that were new to us, which keeps gossip from

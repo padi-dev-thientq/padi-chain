@@ -11,6 +11,7 @@ import (
 
 	"layer1/common"
 	"layer1/core"
+	"layer1/crypto/secp256k1"
 )
 
 // Backend is what the network layer needs from the node.
@@ -38,6 +39,10 @@ type Backend interface {
 // Config tunes the network layer.
 type Config struct {
 	ListenAddr string
+	// NodeKey is the long-term identity this node authenticates with. It is
+	// required: without it there is no way for a peer to know who it is
+	// talking to.
+	NodeKey *secp256k1.PrivateKey
 	// Bootstrap peers to dial on start.
 	Bootstrap []string
 	MaxPeers  int
@@ -77,6 +82,9 @@ type Server struct {
 	// seenBlocks and seenTxs stop a gossiped item from bouncing between peers
 	// forever.
 	seen *seenCache
+
+	// scores tracks peer behaviour so misbehaving nodes can be shed.
+	scores *scoreboard
 }
 
 // NewServer creates a network server.
@@ -91,6 +99,7 @@ func NewServer(config *Config, backend Backend, log *slog.Logger) *Server {
 		peers:   make(map[string]*Peer),
 		quit:    make(chan struct{}),
 		seen:    newSeenCache(8192),
+		scores:  newScoreboard(),
 	}
 }
 
@@ -192,9 +201,26 @@ func (s *Server) handleConnection(conn net.Conn, inbound bool) {
 		return
 	}
 
-	peer := newPeer(conn, s, inbound)
+	// Authenticate and establish encryption before a single protocol byte is
+	// exchanged, so an unauthenticated peer can never reach the block or
+	// transaction handlers.
+	sess, err := performHandshake(conn, s.config.NodeKey, !inbound)
+	if err != nil {
+		s.log.Debug("p2p cryptographic handshake failed", "remote", conn.RemoteAddr().String(), "err", err)
+		conn.Close()
+		return
+	}
+	secure := &secureConn{conn: conn, session: sess}
+
+	if s.IsBanned(sess.remoteID) {
+		s.log.Debug("rejected banned peer", "id", sess.remoteID.String())
+		conn.Close()
+		return
+	}
+
+	peer := newPeer(secure, s, inbound)
 	if err := peer.handshake(); err != nil {
-		s.log.Debug("p2p handshake failed", "remote", conn.RemoteAddr().String(), "err", err)
+		s.log.Debug("p2p protocol handshake failed", "peer", peer.ID(), "err", err)
 		conn.Close()
 		return
 	}
@@ -243,6 +269,29 @@ func (s *Server) syncFrom(peer *Peer) {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// penalise deducts a peer's score and disconnects it if it runs out.
+func (s *Server) penalise(id NodeID, amount int, reason string) {
+	if !s.scores.penalise(id, amount) {
+		return
+	}
+	s.log.Warn("banned peer", "id", id.String(), "reason", reason, "duration", banDuration)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, peer := range s.peers {
+		if peer.NodeID() == id {
+			peer.Close()
+			delete(s.peers, key)
+		}
+	}
+}
+
+// IsBanned reports whether a peer is currently refused.
+func (s *Server) IsBanned(id NodeID) bool { return s.scores.isBanned(id) }
+
+// ScoreOf returns a peer's reputation score.
+func (s *Server) ScoreOf(id NodeID) int { return s.scores.scoreOf(id) }
 
 // PeerCount returns the number of connected peers.
 func (s *Server) PeerCount() int {

@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -57,6 +58,7 @@ type Node struct {
 	log    *slog.Logger
 
 	store    db.Database
+	nodeKey  *secp256k1.PrivateKey
 	chain    *chain.BlockChain
 	engine   *consensus.PoA
 	txpool   *txpool.TxPool
@@ -126,8 +128,15 @@ func New(config *Config) (*Node, error) {
 		return nil, err
 	}
 
+	nodeKey, err := loadOrCreateNodeKey(filepath.Join(config.DataDir, "nodekey"))
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+
 	n := &Node{
 		config:   config,
+		nodeKey:  nodeKey,
 		log:      config.Logger,
 		store:    store,
 		chain:    bc,
@@ -304,6 +313,7 @@ func (n *Node) Start() error {
 
 	if n.config.ListenAddr != "" {
 		netConfig := p2p.DefaultConfig(n.config.ListenAddr)
+		netConfig.NodeKey = n.nodeKey
 		netConfig.Bootstrap = n.config.Bootstrap
 		netConfig.MaxPeers = n.config.MaxPeers
 		netConfig.NodeName = n.config.NodeName
@@ -441,6 +451,37 @@ func (n *Node) Stop() error {
 		n.log.Info("node stopped", "uptime", time.Since(n.startedAt).Truncate(time.Second))
 	})
 	return err
+}
+
+// NodeID returns this node's network identity.
+func (n *Node) NodeID() p2p.NodeID { return p2p.NodeIDOf(n.nodeKey) }
+
+// loadOrCreateNodeKey reads the node's long-term network identity, generating
+// one on first start. The identity has to persist: peers score and ban by it,
+// and a node that regenerates it on every restart would look like a new peer
+// each time — which is exactly how a misbehaving node would evade a ban.
+func loadOrCreateNodeKey(path string) (*secp256k1.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err == nil {
+		key, err := secp256k1.PrivateKeyFromHex(strings.TrimSpace(string(data)))
+		if err != nil {
+			return nil, fmt.Errorf("node: reading %s: %w", path, err)
+		}
+		return key, nil
+	}
+	if !os.IsNotExist(err) {
+		return nil, fmt.Errorf("node: reading %s: %w", path, err)
+	}
+
+	key, err := secp256k1.GenerateKey()
+	if err != nil {
+		return nil, err
+	}
+	encoded := common.EncodeHex(key.Bytes())
+	if err := os.WriteFile(path, []byte(encoded+"\n"), 0o600); err != nil {
+		return nil, fmt.Errorf("node: writing %s: %w", path, err)
+	}
+	return key, nil
 }
 
 // RPCAddr returns the address the RPC server is listening on.

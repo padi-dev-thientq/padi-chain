@@ -374,3 +374,27 @@ var _ = zero
 func IsLowS(s *big.Int) bool {
 	return s != nil && s.Sign() > 0 && s.Cmp(halfN) <= 0
 }
+
+// ECDH computes the shared secret between a private key and a peer's public
+// key: the x coordinate of the shared point, hashed so no structure of the
+// curve point leaks into the derived key material.
+//
+// Both sides compute the same value without it ever crossing the wire, which
+// is what lets two nodes agree on a session key over a channel an attacker can
+// read.
+func ECDH(priv *PrivateKey, pub *PublicKey) ([]byte, error) {
+	if priv == nil || pub == nil {
+		return nil, ErrInvalidKey
+	}
+	point := pub.Point()
+	if !point.OnCurve() || point.IsInfinity() {
+		return nil, ErrInvalidPoint
+	}
+	shared := point.ScalarMul(priv.D)
+	x, _, ok := shared.Affine()
+	if !ok {
+		return nil, ErrInvalidPoint
+	}
+	sum := keccak.Sum256([]byte("layer1/ecdh/v1"), padTo32(x))
+	return sum[:], nil
+}
