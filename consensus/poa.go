@@ -30,6 +30,7 @@ var (
 	ErrInvalidNumber        = errors.New("consensus: block number does not follow its parent")
 	ErrNoValidators         = errors.New("consensus: validator set is empty")
 	ErrExtraDataTooLong     = errors.New("consensus: extra data exceeds the limit")
+	ErrRoundTooHigh         = errors.New("consensus: round number is out of range")
 )
 
 // MaxExtraDataSize caps the free-form header field.
@@ -55,16 +56,24 @@ type Engine interface {
 	Prepare(chain HeaderReader, header *core.Header) error
 	// Seal signs a block as its proposer.
 	Seal(block *core.Block, key *secp256k1.PrivateKey) (*core.Block, error)
-	// ProposerAt returns whose turn it is at the given height.
+	// ProposerAt returns whose turn it is at the given height in round 0.
 	ProposerAt(number uint64) (common.Address, error)
+	// ProposerAtRound returns whose turn it is in a given round.
+	ProposerAtRound(number, round uint64) (common.Address, error)
 	// Validators returns the authorized set.
 	Validators() []common.Address
+	// Quorum returns the number of attestations that finalize a block.
+	Quorum() int
 }
 
 // PoA is a round-robin proof-of-authority engine.
 type PoA struct {
 	validators []common.Address
 	period     uint64
+	// roundTimeout is how long a round lasts. If the scheduled proposer has
+	// not produced a block within it, the next validator in the rotation may
+	// take over. Without this the chain stops dead at the first outage.
+	roundTimeout uint64
 	// now is the clock, replaceable in tests.
 	now func() time.Time
 }
@@ -89,8 +98,28 @@ func NewPoA(validators []common.Address, period uint64) (*PoA, error) {
 	if period == 0 {
 		period = 1
 	}
-	return &PoA{validators: sorted, period: period, now: time.Now}, nil
+	return &PoA{
+		validators:   sorted,
+		period:       period,
+		roundTimeout: period,
+		now:          time.Now,
+	}, nil
 }
+
+// SetRoundTimeout overrides how long a proposer has before the next validator
+// may take over.
+func (p *PoA) SetRoundTimeout(seconds uint64) {
+	if seconds == 0 {
+		seconds = 1
+	}
+	p.roundTimeout = seconds
+}
+
+// RoundTimeout returns the per-round timeout in seconds.
+func (p *PoA) RoundTimeout() uint64 { return p.roundTimeout }
+
+// Quorum returns the number of attestations that finalize a block.
+func (p *PoA) Quorum() int { return core.Quorum(len(p.validators)) }
 
 // SetClock replaces the engine's clock. Tests use it to control timing.
 func (p *PoA) SetClock(now func() time.Time) { p.now = now }
@@ -115,12 +144,36 @@ func (p *PoA) IsValidator(addr common.Address) bool {
 	return false
 }
 
-// ProposerAt returns the validator whose turn it is at a height.
+// ProposerAt returns the validator scheduled to propose at a height.
 func (p *PoA) ProposerAt(number uint64) (common.Address, error) {
+	return p.ProposerAtRound(number, 0)
+}
+
+// ProposerAtRound returns the validator entitled to propose at a height in a
+// given round. Each round hands the turn to the next validator in the
+// rotation, so an unavailable proposer costs one round rather than the chain.
+func (p *PoA) ProposerAtRound(number, round uint64) (common.Address, error) {
 	if len(p.validators) == 0 {
 		return common.Address{}, ErrNoValidators
 	}
-	return p.validators[number%uint64(len(p.validators))], nil
+	return p.validators[(number+round)%uint64(len(p.validators))], nil
+}
+
+// earliestTimeFor returns the first timestamp at which a block for the given
+// round is permitted. A fallback proposer has to wait out the rounds before
+// it, which is what stops it from racing the validator whose turn it is.
+func (p *PoA) earliestTimeFor(parentTime, round uint64) uint64 {
+	return parentTime + p.period + round*p.roundTimeout
+}
+
+// RoundFor returns the highest round whose start time has passed.
+func (p *PoA) RoundFor(parentTime uint64, at time.Time) uint64 {
+	now := uint64(at.Unix())
+	earliest := p.earliestTimeFor(parentTime, 0)
+	if now <= earliest || p.roundTimeout == 0 {
+		return 0
+	}
+	return (now - earliest) / p.roundTimeout
 }
 
 // Author recovers the address that sealed a header.
@@ -159,10 +212,17 @@ func (p *PoA) VerifyHeader(chain HeaderReader, header, parent *core.Header) erro
 		return fmt.Errorf("%w: %d bytes", ErrExtraDataTooLong, len(header.Extra))
 	}
 
-	// Timing: a block may not precede its parent by the block period, and may
-	// not be stamped meaningfully in the future.
-	if header.Time < parent.Time+p.period {
-		return fmt.Errorf("%w: %d is less than parent %d plus period %d", ErrTimestampTooEarly, header.Time, parent.Time, p.period)
+	// Timing. A block must respect the block period, and a block claiming a
+	// fallback round must additionally have waited out every round before it.
+	// That wait is the whole safety argument for the fallback: a validator
+	// cannot seize a turn that is not yet forfeit.
+	if header.Round > uint64(len(p.validators)) {
+		return fmt.Errorf("%w: round %d exceeds the validator count", ErrRoundTooHigh, header.Round)
+	}
+	earliest := p.earliestTimeFor(parent.Time, header.Round)
+	if header.Time < earliest {
+		return fmt.Errorf("%w: %d is before round %d opens at %d",
+			ErrTimestampTooEarly, header.Time, header.Round, earliest)
 	}
 	if header.Time > uint64(p.now().Add(AllowedFutureDrift).Unix()) {
 		return fmt.Errorf("%w: %d", ErrFutureBlock, header.Time)
@@ -175,12 +235,13 @@ func (p *PoA) VerifyHeader(chain HeaderReader, header, parent *core.Header) erro
 	if !p.IsValidator(proposer) {
 		return fmt.Errorf("%w: %s", ErrUnauthorizedProposer, proposer)
 	}
-	expected, err := p.ProposerAt(header.Number.Uint64())
+	expected, err := p.ProposerAtRound(header.Number.Uint64(), header.Round)
 	if err != nil {
 		return err
 	}
 	if proposer != expected {
-		return fmt.Errorf("%w: %s sealed block %s, expected %s", ErrWrongProposerTurn, proposer, header.Number, expected)
+		return fmt.Errorf("%w: %s sealed block %s round %d, expected %s",
+			ErrWrongProposerTurn, proposer, header.Number, header.Round, expected)
 	}
 	// The proposer is also credited as the block's coinbase, so fees go to
 	// whoever actually did the work.
@@ -196,14 +257,21 @@ func (p *PoA) Prepare(chain HeaderReader, header *core.Header) error {
 	if parent == nil {
 		return fmt.Errorf("%w: %s", ErrUnknownParent, header.ParentHash)
 	}
-	proposer, err := p.ProposerAt(header.NumberU64())
+	// The round follows from how long the parent has been unextended, so a
+	// proposer only claims a fallback turn once the earlier ones have lapsed.
+	round := p.RoundFor(parent.Time, p.now())
+	if max := uint64(len(p.validators)); round > max {
+		round = max
+	}
+	header.Round = round
+
+	proposer, err := p.ProposerAtRound(header.NumberU64(), round)
 	if err != nil {
 		return err
 	}
 	header.Coinbase = proposer
 
-	// Never stamp a block earlier than the period allows.
-	earliest := parent.Time + p.period
+	earliest := p.earliestTimeFor(parent.Time, round)
 	now := uint64(p.now().Unix())
 	if now < earliest {
 		header.Time = earliest
@@ -215,13 +283,14 @@ func (p *PoA) Prepare(chain HeaderReader, header *core.Header) error {
 
 // Seal signs the block with the proposer's key.
 func (p *PoA) Seal(block *core.Block, key *secp256k1.PrivateKey) (*core.Block, error) {
-	proposer, err := p.ProposerAt(block.NumberU64())
+	proposer, err := p.ProposerAtRound(block.NumberU64(), block.Round())
 	if err != nil {
 		return nil, err
 	}
 	signer := common.BytesToAddress(common.Keccak256(key.PublicKey().Bytes()).Bytes()[12:])
 	if signer != proposer {
-		return nil, fmt.Errorf("%w: %s cannot seal block %d, it is %s's turn", ErrWrongProposerTurn, signer, block.NumberU64(), proposer)
+		return nil, fmt.Errorf("%w: %s cannot seal block %d round %d, it is %s's turn",
+			ErrWrongProposerTurn, signer, block.NumberU64(), block.Round(), proposer)
 	}
 
 	digest := block.SealingHash()
@@ -237,8 +306,13 @@ func (p *PoA) NextProposalTime(parent *core.Header) time.Time {
 	return time.Unix(int64(parent.Time+p.period), 0)
 }
 
-// IsMyTurn reports whether addr proposes the block after parent.
-func (p *PoA) IsMyTurn(addr common.Address, nextNumber uint64) bool {
-	proposer, err := p.ProposerAt(nextNumber)
+// IsMyTurn reports whether addr may propose the block after parent, taking
+// into account any rounds that have already lapsed.
+func (p *PoA) IsMyTurn(addr common.Address, nextNumber uint64, parentTime uint64) bool {
+	round := p.RoundFor(parentTime, p.now())
+	if max := uint64(len(p.validators)); round > max {
+		round = max
+	}
+	proposer, err := p.ProposerAtRound(nextNumber, round)
 	return err == nil && proposer == addr
 }

@@ -30,6 +30,8 @@ const (
 	MsgBlocks
 	MsgGetBlockByHash
 	MsgDisconnect
+	MsgAttestations
+	MsgEvidence
 )
 
 var messageNames = map[MessageCode]string{
@@ -42,6 +44,8 @@ var messageNames = map[MessageCode]string{
 	MsgBlocks:          "blocks",
 	MsgGetBlockByHash:  "getBlockByHash",
 	MsgDisconnect:      "disconnect",
+	MsgAttestations:    "attestations",
+	MsgEvidence:        "evidence",
 }
 
 func (c MessageCode) String() string {
@@ -98,6 +102,19 @@ type GetBlockByHash struct {
 type DisconnectReason struct {
 	Reason string
 }
+
+// AttestationsPayload carries validator votes.
+type AttestationsPayload struct {
+	Attestations []*core.Attestation
+}
+
+// EvidencePayload carries proof that a validator equivocated.
+type EvidencePayload struct {
+	Evidence []*core.Equivocation
+}
+
+// MaxAttestationsPerMessage bounds a single votes message.
+const MaxAttestationsPerMessage = 512
 
 // MaxBlocksPerRequest bounds how many blocks one request may ask for.
 const MaxBlocksPerRequest = 128

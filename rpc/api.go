@@ -118,10 +118,15 @@ func (a *API) resolveBlock(params []json.RawMessage, index int) (*core.Block, er
 		return nil, NewError(CodeInvalidParams, "block parameter: %v", err)
 	}
 	switch tag {
-	case "", "latest", "pending", "safe", "finalized":
-		// Without a separate consensus layer these all mean the head; there
-		// are no unfinalised blocks under proof of authority.
+	case "", "latest", "pending":
 		return bc.CurrentBlock(), nil
+	case "safe", "finalized":
+		// The finalized head is a real distinction here: blocks above it can
+		// still be reorganised, blocks at or below it never can.
+		if final := bc.FinalizedBlock(); final != nil {
+			return final, nil
+		}
+		return bc.Genesis(), nil
 	case "earliest":
 		return bc.Genesis(), nil
 	default:
@@ -675,6 +680,9 @@ func (a *API) nodeInfo(params []json.RawMessage) (any, error) {
 		"genesis":     bc.Genesis().Hash().Hex(),
 		"head":        head.Hash().Hex(),
 		"blockNumber": common.EncodeHexUint(head.NumberU64()),
+		"finalized":   common.EncodeHexUint(bc.FinalizedNumber()),
+		"validators":  len(bc.Engine().Validators()),
+		"quorum":      bc.Engine().Quorum(),
 		"peers":       a.backend.PeerCount(),
 		"txpool":      map[string]int{"pending": pending, "queued": queued},
 	}, nil

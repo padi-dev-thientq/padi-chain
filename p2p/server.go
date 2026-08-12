@@ -29,6 +29,10 @@ type Backend interface {
 	HandleBlock(block *core.Block) error
 	// HandleTransactions imports transactions received from a peer.
 	HandleTransactions(txs []*core.Transaction)
+	// HandleAttestations imports validator votes received from a peer.
+	HandleAttestations(attestations []*core.Attestation)
+	// HandleEvidence imports equivocation proofs received from a peer.
+	HandleEvidence(evidence []*core.Equivocation)
 }
 
 // Config tunes the network layer.
@@ -300,6 +304,42 @@ func (s *Server) BroadcastTransactions(txs []*core.Transaction) {
 	}
 	for _, peer := range s.Peers() {
 		peer.sendRaw(MsgNewTransactions, payload)
+	}
+}
+
+// BroadcastAttestations announces validator votes to peers.
+func (s *Server) BroadcastAttestations(attestations []*core.Attestation) {
+	var fresh []*core.Attestation
+	for _, a := range attestations {
+		if s.seen.add(a.Hash()) {
+			fresh = append(fresh, a)
+		}
+	}
+	if len(fresh) == 0 {
+		return
+	}
+	payload, err := encodePayload(&AttestationsPayload{Attestations: fresh})
+	if err != nil {
+		return
+	}
+	for _, peer := range s.Peers() {
+		peer.sendRaw(MsgAttestations, payload)
+	}
+}
+
+// BroadcastEvidence announces equivocation proofs to peers. Evidence is worth
+// propagating aggressively: it is how the network learns that a validator has
+// broken the one rule finality depends on.
+func (s *Server) BroadcastEvidence(evidence []*core.Equivocation) {
+	if len(evidence) == 0 {
+		return
+	}
+	payload, err := encodePayload(&EvidencePayload{Evidence: evidence})
+	if err != nil {
+		return
+	}
+	for _, peer := range s.Peers() {
+		peer.sendRaw(MsgEvidence, payload)
 	}
 }
 

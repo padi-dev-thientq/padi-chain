@@ -27,6 +27,14 @@ type Builder struct {
 	key    *secp256k1.PrivateKey
 	// coinbase is the address fees are credited to; it must be the validator's.
 	coinbase common.Address
+	// attestations supplies the quorum certificate a new block carries, which
+	// is how finality reaches nodes that were not online to collect the votes.
+	attestations *consensus.AttestationPool
+}
+
+// SetAttestationPool attaches the pool a block's justification is drawn from.
+func (b *Builder) SetAttestationPool(pool *consensus.AttestationPool) {
+	b.attestations = pool
 }
 
 // NewBuilder creates a block builder for a validator key.
@@ -61,7 +69,7 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 	parentHeader := parent.Header()
 	next := parent.NumberU64() + 1
 
-	if !b.engineIsOurTurn(next) {
+	if !b.engineIsOurTurn(next, parentHeader.Time) {
 		proposer, _ := b.engine.ProposerAt(next)
 		return nil, fmt.Errorf("%w: block %d belongs to %s", ErrNotOurTurn, next, proposer)
 	}
@@ -76,6 +84,18 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 	}
 	if err := b.engine.Prepare(b.chain, header); err != nil {
 		return nil, err
+	}
+
+	// Carry proof that the parent is final, when the votes are in. Embedding it
+	// makes finality part of the chain rather than per-node local knowledge.
+	if b.attestations != nil {
+		if qc := b.attestations.Certificate(parent.NumberU64(), parent.Hash()); qc != nil {
+			encoded, err := qc.Encode()
+			if err != nil {
+				return nil, err
+			}
+			header.Justification = encoded
+		}
 	}
 
 	statedb, err := b.chain.StateAt(parent.StateRoot())
@@ -142,7 +162,12 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 	}, nil
 }
 
-func (b *Builder) engineIsOurTurn(number uint64) bool {
+// engineIsOurTurn reports whether this validator may propose, accounting for
+// any fallback rounds that have opened since the parent.
+func (b *Builder) engineIsOurTurn(number, parentTime uint64) bool {
+	if poa, ok := b.engine.(*consensus.PoA); ok {
+		return poa.IsMyTurn(b.coinbase, number, parentTime)
+	}
 	proposer, err := b.engine.ProposerAt(number)
 	return err == nil && proposer == b.coinbase
 }
@@ -164,8 +189,8 @@ func (b *Builder) Commit(candidates core.Transactions) (*Result, error) {
 func (b *Builder) WaitUntilTurn(timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		next := b.chain.CurrentBlock().NumberU64() + 1
-		if b.engineIsOurTurn(next) {
+		head := b.chain.CurrentBlock()
+		if b.engineIsOurTurn(head.NumberU64()+1, head.Time()) {
 			return nil
 		}
 		time.Sleep(50 * time.Millisecond)

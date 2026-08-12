@@ -37,8 +37,9 @@ type BlockChain struct {
 	processor *processor.Processor
 	config    *processor.Config
 
-	genesis *core.Block
-	current *core.Block
+	genesis   *core.Block
+	current   *core.Block
+	finalized *core.Block
 
 	// subscribers are notified after every canonical head change.
 	subMu       sync.Mutex
@@ -88,6 +89,12 @@ func NewBlockChain(store db.Database, genesis *Genesis, engine consensus.Engine)
 			return nil, err
 		}
 		bc.genesis = block
+	}
+
+	if hash, err := ReadFinalizedHash(store); err == nil {
+		if block, err := ReadBlock(store, hash); err == nil {
+			bc.finalized = block
+		}
 	}
 
 	head, err := ReadHeadBlockHash(store)
@@ -276,6 +283,9 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 	if err := bc.verifyBlock(block, parent); err != nil {
 		return err
 	}
+	if err := bc.checkFinalityLocked(block); err != nil {
+		return err
+	}
 
 	// Execute against the parent's state.
 	statedb, err := bc.StateAt(parent.StateRoot())
@@ -312,8 +322,18 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 		return err
 	}
 
-	// A longer chain wins. Equal length keeps the incumbent, so a node does
-	// not flip-flop between branches of the same height.
+	// A block may carry proof that an ancestor is final; acting on it before
+	// the fork choice means the head can only move to a branch that respects
+	// the newly settled history.
+	if qc, err := block.Justification(); err == nil && !qc.IsEmpty() {
+		if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err == nil {
+			bc.finalizeLocked(qc)
+		}
+	}
+
+	// A longer chain wins, but only among branches that extend finalized
+	// history. Equal length keeps the incumbent, so a node does not flip-flop
+	// between branches of the same height.
 	if block.NumberU64() > bc.current.NumberU64() {
 		reverted, err := bc.reorgTo(block)
 		if err != nil {
@@ -322,6 +342,24 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 		bc.publish(ChainEvent{Block: block, Receipts: receipts, Logs: logs, Reverted: reverted})
 	}
 	return nil
+}
+
+// finalizeLocked applies a verified certificate; callers must hold the lock.
+func (bc *BlockChain) finalizeLocked(qc *core.QuorumCert) {
+	block := bc.getBlock(qc.BlockHash)
+	if block == nil || block.NumberU64() != qc.Number {
+		return
+	}
+	if bc.finalized != nil && block.NumberU64() <= bc.finalized.NumberU64() {
+		return
+	}
+	if bc.finalized != nil && !bc.isDescendantLocked(block, bc.finalized) {
+		return
+	}
+	if err := WriteFinalizedHash(bc.store, block.Hash()); err != nil {
+		return
+	}
+	bc.finalized = block
 }
 
 // verifyBlock applies the consensus and structural rules that do not require
@@ -341,6 +379,18 @@ func (bc *BlockChain) verifyBlock(block *core.Block, parent *core.Block) error {
 	}
 	if err := bc.config.VerifyBaseFee(header, parentHeader); err != nil {
 		return err
+	}
+	if len(header.Justification) > 0 {
+		qc, err := core.DecodeQuorumCert(header.Justification)
+		if err != nil {
+			return err
+		}
+		if qc.Number >= block.NumberU64() {
+			return fmt.Errorf("chain: block %d justifies height %d, which is not an ancestor", block.NumberU64(), qc.Number)
+		}
+		if _, err := qc.Verify(bc.config.ChainID, bc.engine.Validators()); err != nil {
+			return fmt.Errorf("chain: block %d carries an invalid justification: %w", block.NumberU64(), err)
+		}
 	}
 	// The transaction root is checked when the block is decoded, but a locally
 	// constructed block has not been through that path.

@@ -332,6 +332,37 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 		}
 		return p.Send(MsgBlocks, &BlocksPayload{Blocks: encoded})
 
+	case MsgAttestations:
+		var votes AttestationsPayload
+		if err := decodePayload(payload, &votes); err != nil {
+			return err
+		}
+		if len(votes.Attestations) > MaxAttestationsPerMessage {
+			return fmt.Errorf("p2p: %d attestations exceeds the per-message limit", len(votes.Attestations))
+		}
+		var fresh []*core.Attestation
+		for _, a := range votes.Attestations {
+			p.seen.add(a.Hash())
+			if p.server.seen.add(a.Hash()) {
+				fresh = append(fresh, a)
+			}
+		}
+		if len(fresh) > 0 {
+			backend.HandleAttestations(fresh)
+			p.server.BroadcastAttestations(fresh)
+		}
+		return nil
+
+	case MsgEvidence:
+		var proofs EvidencePayload
+		if err := decodePayload(payload, &proofs); err != nil {
+			return err
+		}
+		if len(proofs.Evidence) > 0 {
+			backend.HandleEvidence(proofs.Evidence)
+		}
+		return nil
+
 	case MsgDisconnect:
 		var reason DisconnectReason
 		decodePayload(payload, &reason)

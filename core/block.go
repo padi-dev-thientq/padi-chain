@@ -26,6 +26,15 @@ type Header struct {
 	Time        uint64
 	Extra       []byte
 	BaseFee     *big.Int
+	// Round is the consensus round this block was produced in. Round 0 is the
+	// scheduled proposer; higher rounds are the fallback proposers that take
+	// over when the scheduled one does not deliver, which is what keeps the
+	// chain alive through a validator outage.
+	Round uint64
+	// Justification is the encoded quorum certificate finalizing an ancestor.
+	// Carrying it in the header is what lets a node that was offline when the
+	// votes were cast still verify finality from the chain alone.
+	Justification []byte
 	// ProposerSeal is the proposer's signature over the sealing hash. It is
 	// excluded from that hash, since a signature cannot commit to itself.
 	ProposerSeal []byte
@@ -52,6 +61,7 @@ func CopyHeader(h *Header) *Header {
 	out.Number = copyBig(h.Number)
 	out.BaseFee = copyBig(h.BaseFee)
 	out.Extra = common.CopyBytes(h.Extra)
+	out.Justification = common.CopyBytes(h.Justification)
 	out.ProposerSeal = common.CopyBytes(h.ProposerSeal)
 	return &out
 }
@@ -61,6 +71,7 @@ func (h *Header) SealingHash() common.Hash {
 	enc, err := rlp.Encode([]any{
 		h.ParentHash, h.Coinbase, h.StateRoot, h.TxRoot, h.ReceiptRoot,
 		h.Bloom, h.Number, h.GasLimit, h.GasUsed, h.Time, h.Extra, h.BaseFee,
+		h.Round, h.Justification,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("core: encoding sealing hash: %v", err))
@@ -143,6 +154,13 @@ func (b *Block) BaseFee() *big.Int          { return copyBig(b.header.BaseFee) }
 func (b *Block) Bloom() Bloom               { return b.header.Bloom }
 func (b *Block) Extra() []byte              { return common.CopyBytes(b.header.Extra) }
 func (b *Block) Seal() []byte               { return common.CopyBytes(b.header.ProposerSeal) }
+func (b *Block) Round() uint64              { return b.header.Round }
+
+// Justification returns the quorum certificate this block carries, or nil when
+// it justifies nothing.
+func (b *Block) Justification() (*QuorumCert, error) {
+	return DecodeQuorumCert(b.header.Justification)
+}
 
 // Timestamp returns the block time as a Go time value.
 func (b *Block) Timestamp() time.Time { return time.Unix(int64(b.header.Time), 0).UTC() }

@@ -587,6 +587,10 @@ func cmdStatus(args []string) error {
 	fmt.Printf("version:  %v\n", info["version"])
 	fmt.Printf("chain id: %s\n", chainID)
 	fmt.Printf("head:     #%d %v\n", number, info["head"])
+	if finalized, err := common.DecodeHexUint(fmt.Sprint(info["finalized"])); err == nil {
+		fmt.Printf("final:    #%d\n", finalized)
+	}
+	fmt.Printf("quorum:   %v of %v validators\n", info["quorum"], info["validators"])
 	fmt.Printf("genesis:  %v\n", info["genesis"])
 	fmt.Printf("peers:    %v\n", info["peers"])
 	if pool, ok := info["txpool"].(map[string]any); ok {

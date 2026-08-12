@@ -62,9 +62,10 @@ type Node struct {
 	txpool   *txpool.TxPool
 	keystore *keystore.KeyStore
 
-	network *p2p.Server
-	rpc     *rpc.Server
-	builder *miner.Builder
+	network      *p2p.Server
+	rpc          *rpc.Server
+	builder      *miner.Builder
+	attestations *consensus.AttestationPool
 
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -135,9 +136,11 @@ func New(config *Config) (*Node, error) {
 		quit:     make(chan struct{}),
 	}
 	n.txpool = txpool.New(txpool.DefaultConfig(), genesis.ChainID, n)
+	n.attestations = consensus.NewAttestationPool(genesis.ChainID, genesis.Validators)
 
 	if config.Validator != nil {
 		n.builder = miner.NewBuilder(bc, engine, config.Validator)
+		n.builder.SetAttestationPool(n.attestations)
 	}
 	return n, nil
 }
@@ -196,6 +199,7 @@ func (n *Node) HandleBlock(block *core.Block) error {
 	case err == nil:
 		n.txpool.Reset(block.Transactions())
 		n.log.Info("imported block", "number", block.NumberU64(), "hash", block.Hash(), "txs", len(block.Transactions()))
+		n.attest(block)
 		return nil
 	case errors.Is(err, chain.ErrKnownBlock):
 		return err
@@ -205,6 +209,83 @@ func (n *Node) HandleBlock(block *core.Block) error {
 	default:
 		n.log.Warn("rejected block from peer", "number", block.NumberU64(), "hash", block.Hash(), "err", err)
 		return err
+	}
+}
+
+// Attestations exposes the vote pool.
+func (n *Node) Attestations() *consensus.AttestationPool { return n.attestations }
+
+// HandleAttestations records validator votes received from a peer and acts on
+// any quorum they complete.
+func (n *Node) HandleAttestations(attestations []*core.Attestation) {
+	for _, attestation := range attestations {
+		added, err := n.attestations.Add(attestation)
+		if err != nil {
+			if errors.Is(err, consensus.ErrEquivocation) {
+				// A validator voting two ways is the one fault that can break
+				// finality, so it is logged loudly and the proof is spread.
+				n.log.Error("equivocation detected", "height", attestation.Number, "err", err)
+				if n.network != nil {
+					n.network.BroadcastEvidence(n.attestations.Evidence())
+				}
+			}
+			continue
+		}
+		if added {
+			n.tryFinalize(attestation.Number, attestation.BlockHash)
+		}
+	}
+}
+
+// HandleEvidence records equivocation proofs received from a peer.
+func (n *Node) HandleEvidence(evidence []*core.Equivocation) {
+	for _, proof := range evidence {
+		if err := n.attestations.AddEvidence(proof); err != nil {
+			n.log.Debug("rejected equivocation evidence", "err", err)
+			continue
+		}
+		n.log.Error("validator equivocated", "validator", proof.Validator, "height", proof.Number)
+	}
+}
+
+// tryFinalize promotes a block to final once a quorum has attested to it.
+func (n *Node) tryFinalize(number uint64, hash common.Hash) {
+	qc := n.attestations.Certificate(number, hash)
+	if qc == nil {
+		return
+	}
+	if number <= n.chain.FinalizedNumber() {
+		return
+	}
+	if err := n.chain.Finalize(qc); err != nil {
+		n.log.Warn("finalization failed", "number", number, "hash", hash, "err", err)
+		return
+	}
+	n.attestations.MarkFinalized(number)
+	n.log.Info("finalized block", "number", number, "hash", hash,
+		"votes", len(qc.Signatures), "quorum", n.attestations.Quorum())
+}
+
+// attest votes for a block this node has verified and imported. A validator
+// only ever attests to a block it executed itself, so a quorum is a statement
+// about validity, not just about what was seen first.
+func (n *Node) attest(block *core.Block) {
+	if n.config.Validator == nil || !n.engine.IsValidator(keystore.AddressOf(n.config.Validator)) {
+		return
+	}
+	attestation, err := n.attestations.Attest(n.config.Validator, block.NumberU64(), block.Hash())
+	if err != nil {
+		n.log.Error("signing attestation", "number", block.NumberU64(), "err", err)
+		return
+	}
+	if _, err := n.attestations.Add(attestation); err != nil {
+		n.log.Error("recording own attestation", "err", err)
+		return
+	}
+	n.tryFinalize(block.NumberU64(), block.Hash())
+
+	if n.network != nil {
+		n.network.BroadcastAttestations([]*core.Attestation{attestation})
 	}
 }
 
@@ -277,7 +358,9 @@ func (n *Node) Start() error {
 		"chainId", n.ChainID(),
 		"genesis", n.chain.Genesis().Hash(),
 		"head", head.NumberU64(),
-		"validators", len(n.engine.Validators()))
+		"finalized", n.chain.FinalizedNumber(),
+		"validators", len(n.engine.Validators()),
+		"quorum", n.attestations.Quorum())
 	return nil
 }
 
@@ -309,11 +392,11 @@ func (n *Node) tryPropose() {
 	head := n.chain.CurrentBlock()
 	next := head.NumberU64() + 1
 
-	if !n.engine.IsMyTurn(n.builder.Coinbase(), next) {
+	// The turn accounts for fallback rounds, so an absent proposer costs one
+	// round rather than stalling the chain.
+	if !n.engine.IsMyTurn(n.builder.Coinbase(), next, head.Time()) {
 		return
 	}
-	// Respect the block period: proposing early would produce a header that
-	// every other node rejects.
 	if uint64(time.Now().Unix()) < head.Time()+n.engine.Period() {
 		return
 	}
@@ -337,6 +420,9 @@ func (n *Node) tryPropose() {
 	if n.network != nil {
 		n.network.BroadcastBlock(result.Block)
 	}
+	// The proposer attests to its own block like any other validator; in a
+	// single-validator network that vote alone is the quorum.
+	n.attest(result.Block)
 }
 
 // Stop shuts the node down and closes its store.
