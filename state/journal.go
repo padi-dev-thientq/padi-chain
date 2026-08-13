@@ -3,7 +3,7 @@ package state
 import (
 	"math/big"
 
-	"layer1/common"
+	"padi-chain/common"
 )
 
 // journalEntry is a single reversible modification to the state.

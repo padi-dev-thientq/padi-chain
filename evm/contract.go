@@ -1,8 +1,8 @@
 package evm
 
 import (
-	"layer1/common"
-	"layer1/uint256"
+	"padi-chain/common"
+	"padi-chain/uint256"
 )
 
 // ContractRef is something that can act as the caller of a contract.

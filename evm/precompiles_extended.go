@@ -4,10 +4,10 @@ import (
 	"errors"
 	"math/big"
 
-	"layer1/common"
-	"layer1/crypto/blake2b"
-	"layer1/crypto/bn254"
-	"layer1/crypto/ripemd160"
+	"padi-chain/common"
+	"padi-chain/crypto/blake2b"
+	"padi-chain/crypto/bn254"
+	"padi-chain/crypto/ripemd160"
 )
 
 // The precompiles beyond the original four. Between them they are what lets a

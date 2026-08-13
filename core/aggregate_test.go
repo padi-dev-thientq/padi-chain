@@ -4,8 +4,8 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/crypto/bls12381"
+	"padi-chain/common"
+	"padi-chain/crypto/bls12381"
 )
 
 var aggChainID = big.NewInt(1337)

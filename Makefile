@@ -1,4 +1,4 @@
-# layer1 — a Makefile for the commands you would otherwise type.
+# padi-chain — a Makefile for the commands you would otherwise type.
 #
 # Every target here wraps something that works on its own; nothing is hidden
 # behind a script you cannot read. Run `make help` for the list.
@@ -6,7 +6,7 @@
 # Variables can be overridden on the command line:
 #     make run DATADIR=./othernode RPC_ADDR=127.0.0.1:9545
 
-BINARY      ?= layer1
+BINARY      ?= padi-chain
 DATADIR     ?= ./data
 CHAINID     ?= 1337
 PERIOD      ?= 2
@@ -35,7 +35,7 @@ GOFILES   = $(shell find . -name '*.go' -not -path './vendor/*')
 
 .PHONY: help
 help: ## Show this help
-	@echo "layer1 — targets:"
+	@echo "padi-chain — targets:"
 	@echo
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
@@ -46,11 +46,11 @@ help: ## Show this help
 build: $(BINARY) ## Build the node binary
 
 $(BINARY): $(GOFILES)
-	$(GO) build -o $(BINARY) ./cmd/layer1
+	$(GO) build -o $(BINARY) ./cmd/padi-chain
 
 .PHONY: install
 install: ## Install the binary into GOPATH/bin
-	$(GO) install ./cmd/layer1
+	$(GO) install ./cmd/padi-chain
 
 .PHONY: test
 test: ## Run the test suite
@@ -155,7 +155,7 @@ prune: ## Ask the running node to prune its state now
 .PHONY: validators
 validators: ## List the active validator set
 	@curl -s -X POST -H 'Content-Type: application/json' \
-		--data '{"jsonrpc":"2.0","id":1,"method":"layer1_validators"}' $(RPC)
+		--data '{"jsonrpc":"2.0","id":1,"method":"padi_validators"}' $(RPC)
 
 # ------------------------------------------------------------------- accounts
 

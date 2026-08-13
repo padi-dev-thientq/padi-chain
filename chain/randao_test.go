@@ -4,11 +4,11 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/miner"
-	"layer1/staking"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/miner"
+	"padi-chain/staking"
 )
 
 func TestRandaoMixAdvances(t *testing.T) {

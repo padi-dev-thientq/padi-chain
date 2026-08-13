@@ -5,10 +5,10 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/db"
-	"layer1/state"
-	"layer1/trie"
+	"padi-chain/common"
+	"padi-chain/db"
+	"padi-chain/state"
+	"padi-chain/trie"
 )
 
 // buildState creates a populated state and returns its store and root.

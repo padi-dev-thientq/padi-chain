@@ -1,4 +1,4 @@
-// Command layer1 runs a node of the layer1 blockchain and provides the tools
+// Command padi-chain runs a node of the padi-chain blockchain and provides the tools
 // to set one up.
 package main
 
@@ -20,18 +20,18 @@ import (
 	"syscall"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
-	"layer1/keystore"
-	"layer1/node"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/keystore"
+	"padi-chain/node"
 )
 
-const usage = `layer1 - a blockchain node
+const usage = `padi-chain - a blockchain node
 
 Usage:
-  layer1 <command> [flags]
+  padi-chain <command> [flags]
 
 Commands:
   init       Create a data directory and write a genesis file
@@ -44,7 +44,7 @@ Commands:
   prune      Ask a running node to prune its state now
   version    Print the version
 
-Run "layer1 <command> -h" for the flags of a command.
+Run "padi-chain <command> -h" for the flags of a command.
 `
 
 func main() {
@@ -186,7 +186,7 @@ func cmdInit(args []string) error {
 	}
 	fmt.Printf("Wrote %s\n", genesisPath)
 	fmt.Printf("Chain id %d, block period %ds, %d validator(s)\n", *chainID, *period, len(validatorSet))
-	fmt.Printf("\nStart the node with:\n  layer1 run -datadir %s -mine -validator %s\n", *dataDir, validatorSet[0])
+	fmt.Printf("\nStart the node with:\n  padi-chain run -datadir %s -mine -validator %s\n", *dataDir, validatorSet[0])
 	return nil
 }
 
@@ -194,7 +194,7 @@ func cmdInit(args []string) error {
 
 func cmdAccount(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: layer1 account <new|list|import> [flags]")
+		return errors.New("usage: padi-chain account <new|list|import> [flags]")
 	}
 	fs := flag.NewFlagSet("account", flag.ExitOnError)
 	dataDir := fs.String("datadir", "./data", "data directory")
@@ -274,7 +274,7 @@ func cmdRun(args []string) error {
 	mine := fs.Bool("mine", false, "produce blocks when it is this validator's turn")
 	validator := fs.String("validator", "", "validator address to seal with")
 	passphrase := fs.String("password", "", "passphrase to unlock the validator key")
-	nodeName := fs.String("name", "layer1", "node name announced to peers")
+	nodeName := fs.String("name", "padi-chain", "node name announced to peers")
 	logLevel := fs.String("log", "info", "log level: debug, info, warn, error")
 	archive := fs.Bool("archive", false, "keep every historical state instead of pruning")
 	retain := fs.Uint64("retain", 256, "how many recent blocks' states to keep when pruning")
@@ -559,7 +559,7 @@ func cmdBalance(args []string) error {
 	fs.Parse(args)
 
 	if fs.NArg() < 1 {
-		return errors.New("usage: layer1 balance <address>")
+		return errors.New("usage: padi-chain balance <address>")
 	}
 	addr, err := common.HexToAddress(fs.Arg(0))
 	if err != nil {
@@ -585,7 +585,7 @@ func cmdStatus(args []string) error {
 	fs.Parse(args)
 
 	client := &rpcClient{url: *rpcURL}
-	raw, err := client.call("layer1_nodeInfo")
+	raw, err := client.call("padi_nodeInfo")
 	if err != nil {
 		return err
 	}

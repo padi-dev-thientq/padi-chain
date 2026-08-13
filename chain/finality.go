@@ -4,10 +4,10 @@ import (
 	"errors"
 	"fmt"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/db"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/db"
+	"padi-chain/state"
 )
 
 // Finality tracking.

@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"layer1/common"
-	"layer1/core"
+	"padi-chain/common"
+	"padi-chain/core"
 )
 
 // Peer is one connected node.

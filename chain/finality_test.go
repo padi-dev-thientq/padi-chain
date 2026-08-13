@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/consensus"
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/crypto/secp256k1"
-	"layer1/db"
-	"layer1/miner"
-	"layer1/staking"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/consensus"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/db"
+	"padi-chain/miner"
+	"padi-chain/staking"
 )
 
 // finalize has every validator in the set attest to a block and applies the

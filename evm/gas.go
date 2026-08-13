@@ -1,8 +1,8 @@
 package evm
 
 import (
-	"layer1/common"
-	"layer1/uint256"
+	"padi-chain/common"
+	"padi-chain/uint256"
 )
 
 // Base gas costs. The tiers mirror the yellow paper's grouping of

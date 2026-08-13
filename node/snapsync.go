@@ -4,9 +4,9 @@ import (
 	"sync"
 	"time"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/statesync"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/statesync"
 )
 
 // Snapshot sync.

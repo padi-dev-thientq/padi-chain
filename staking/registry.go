@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
+	"padi-chain/common"
 )
 
 // The registry's storage layout.

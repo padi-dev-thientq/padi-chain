@@ -1,4 +1,4 @@
-# Running a chain
+# Running padi-chain
 
 Every command below was run against this code. The output shown is real.
 
@@ -17,7 +17,7 @@ $ make stop
 ## 1. Build
 
 ```
-$ go build -o layer1 ./cmd/layer1
+$ go build -o padi-chain ./cmd/padi-chain
 ```
 
 No dependencies to fetch — the module requires nothing beyond the standard
@@ -26,7 +26,7 @@ library.
 ## 2. Create a chain
 
 ```
-$ ./layer1 init -datadir ./data -chainid 1337 -period 2
+$ ./padi-chain init -datadir ./data -chainid 1337 -period 2
 Created validator account 0x9c723c00c6C1bB9d179b0a14860C37F8ab1611eb
 Wrote data/genesis.json
 Chain id 1337, block period 2s, 1 validator(s)
@@ -40,13 +40,13 @@ and anyone can join the same chain.
 For a multi-validator chain, name them instead:
 
 ```
-$ ./layer1 init -datadir ./data -validators 0xAAA...,0xBBB... -alloc 0xCCC...=1000000000000000000
+$ ./padi-chain init -datadir ./data -validators 0xAAA...,0xBBB... -alloc 0xCCC...=1000000000000000000
 ```
 
 ## 3. Start the node
 
 ```
-$ ./layer1 run -datadir ./data -mine \
+$ ./padi-chain run -datadir ./data -mine \
       -validator 0x9c723c00c6C1bB9d179b0a14860C37F8ab1611eb \
       -rpc 127.0.0.1:8545 -monitor 127.0.0.1:6060 -addr 0.0.0.0:30303
 ```
@@ -55,7 +55,7 @@ $ ./layer1 run -datadir ./data -mine \
 peer port, `-rpc` the JSON-RPC port, `-monitor` metrics and health.
 
 ```
-$ ./layer1 status
+$ ./padi-chain status
 chain id: 1337
 head:     #4 0xe0b0b132...
 final:    #4
@@ -104,7 +104,7 @@ arguments are appended ABI-encoded — here `100` as a 32-byte word:
 ```
 $ ARG=$(printf '%064x' 100)
 $ BIN=$(python3 -c "import json;d=json.load(open('out.json'));print(list(d['contracts'].values())[0]['bin'])")
-$ ./layer1 send -from 0x9c72... -data 0x${BIN}${ARG} -gas 500000
+$ ./padi-chain send -from 0x9c72... -data 0x${BIN}${ARG} -gas 500000
 0x6591777cecdc84803c294255b811b41f86b3710375ee07cb9c984d6c4f3fe7e8
 ```
 
@@ -122,7 +122,7 @@ $ curl -s -X POST -H 'Content-Type: application/json' \
 Reading costs nothing and runs against a copy of the state:
 
 ```
-$ ./layer1 call -to 0x8b1d701f... -data 0x06661abd     # count()
+$ ./padi-chain call -to 0x8b1d701f... -data 0x06661abd     # count()
 0x0000000000000000000000000000000000000000000000000000000000000064   # 100
 ```
 
@@ -130,9 +130,9 @@ Writing is a signed transaction. The selector is the first four bytes of
 `keccak256("increment(uint256)")`, followed by the argument:
 
 ```
-$ ./layer1 send -from 0x9c72... -to 0x8b1d701f... \
+$ ./padi-chain send -from 0x9c72... -to 0x8b1d701f... \
       -data 0x7cf5dab0$(printf '%064x' 41) -gas 100000
-$ ./layer1 call -to 0x8b1d701f... -data 0x06661abd
+$ ./padi-chain call -to 0x8b1d701f... -data 0x06661abd
 0x000000000000000000000000000000000000000000000000000000000000008d   # 141
 ```
 
@@ -151,9 +151,9 @@ with `web3_sha3` if you have no other tooling to hand.
 ## 6. Add a second node
 
 ```
-$ ./layer1 init -datadir ./data2 ...        # or copy data/genesis.json across
+$ ./padi-chain init -datadir ./data2 ...        # or copy data/genesis.json across
 $ cp data/genesis.json data2/genesis.json
-$ ./layer1 run -datadir ./data2 -addr 0.0.0.0:30304 -rpc 127.0.0.1:8546 \
+$ ./padi-chain run -datadir ./data2 -addr 0.0.0.0:30304 -rpc 127.0.0.1:8546 \
       -peers 127.0.0.1:30303
 ```
 
@@ -175,11 +175,11 @@ deposit, the validator joins at the next epoch boundary, subject to the churn
 limit.
 
 ```
-$ ./layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff \
+$ ./padi-chain send -from <validator> -to 0x00000000000000000000000000000000000000ff \
       -value 32000000000000000000 -data 0x01<withdrawal><blsKey><proof> -gas 500000
 ```
 
-`layer1_validatorInfo` reports where a validator sits in its lifecycle.
+`padi_validatorInfo` reports where a validator sits in its lifecycle.
 
 ## Operating
 

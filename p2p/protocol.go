@@ -9,9 +9,9 @@ import (
 	"io"
 	"math/big"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/rlp"
 )
 
 // ProtocolVersion is bumped whenever the wire format changes incompatibly.

@@ -13,7 +13,7 @@ package staking
 import (
 	"math/big"
 
-	"layer1/common"
+	"padi-chain/common"
 )
 
 // Gwei is the accounting unit for stake, as on Ethereum. Balances are held in

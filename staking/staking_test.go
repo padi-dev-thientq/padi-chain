@@ -6,9 +6,9 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/db"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/db"
+	"padi-chain/state"
 )
 
 func newTestState(t *testing.T) *state.StateDB {

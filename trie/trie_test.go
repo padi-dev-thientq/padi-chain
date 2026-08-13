@@ -6,8 +6,8 @@ import (
 	"math/rand"
 	"testing"
 
-	"layer1/common"
-	"layer1/db"
+	"padi-chain/common"
+	"padi-chain/db"
 )
 
 func newTrie() *Trie { return NewEmpty(db.NewMemoryDB()) }

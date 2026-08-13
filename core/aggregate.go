@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/crypto/bls12381"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/rlp"
 )
 
 // Aggregated attestations.
@@ -128,7 +128,7 @@ type AggregateAttestation struct {
 // disjoint from every other signature the protocol produces.
 func AttestationMessage(chainID *big.Int, number uint64, blockHash common.Hash) []byte {
 	enc, err := rlp.Encode([]any{
-		[]byte("layer1/attestation/bls/v1"),
+		[]byte("padi-chain/attestation/bls/v1"),
 		chainID,
 		number,
 		blockHash,
@@ -150,7 +150,7 @@ func SignAttestationBLS(key *bls12381.SecretKey, chainID *big.Int, number uint64
 // alternatives until one produces a seed it likes.
 func RandaoMessage(chainID *big.Int, epoch uint64) []byte {
 	enc, err := rlp.Encode([]any{
-		[]byte("layer1/randao/v1"),
+		[]byte("padi-chain/randao/v1"),
 		chainID,
 		epoch,
 	})

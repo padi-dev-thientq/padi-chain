@@ -5,12 +5,12 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/crypto/bn254"
+	"padi-chain/crypto/bn254"
 
-	"layer1/common"
-	"layer1/db"
-	"layer1/state"
-	"layer1/uint256"
+	"padi-chain/common"
+	"padi-chain/db"
+	"padi-chain/state"
+	"padi-chain/uint256"
 )
 
 var (

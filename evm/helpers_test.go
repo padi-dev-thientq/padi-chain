@@ -1,6 +1,6 @@
 package evm
 
-import "layer1/crypto/secp256k1"
+import "padi-chain/crypto/secp256k1"
 
 // secp256k1PrivateKey returns a fixed key so tests are reproducible.
 func secp256k1PrivateKey() (*secp256k1.PrivateKey, error) {

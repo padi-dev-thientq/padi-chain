@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"layer1/common"
-	"layer1/crypto/secp256k1"
+	"padi-chain/common"
+	"padi-chain/crypto/secp256k1"
 )
 
 func testKey(t *testing.T, i byte) *secp256k1.PrivateKey {

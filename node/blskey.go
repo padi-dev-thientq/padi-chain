@@ -3,9 +3,9 @@ package node
 import (
 	"sync"
 
-	"layer1/crypto/bls12381"
-	"layer1/keystore"
-	"layer1/staking"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/keystore"
+	"padi-chain/staking"
 )
 
 // The validator's attestation key.
@@ -68,7 +68,7 @@ func (n *Node) derivedBLSKey() *bls12381.SecretKey {
 	if n.config.Validator == nil {
 		return nil
 	}
-	return bls12381.DeriveSecretKey(append([]byte("layer1/validator-bls/v1"), n.config.Validator.Bytes()...))
+	return bls12381.DeriveSecretKey(append([]byte("padi-chain/validator-bls/v1"), n.config.Validator.Bytes()...))
 }
 
 // AttestationKey returns this node's attestation public key, for an operator

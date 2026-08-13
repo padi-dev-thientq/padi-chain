@@ -3,12 +3,12 @@ package node
 import (
 	"math/big"
 
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/keystore"
-	"layer1/processor"
-	"layer1/rlp"
-	"layer1/staking"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/keystore"
+	"padi-chain/processor"
+	"padi-chain/rlp"
+	"padi-chain/staking"
 )
 
 // Reporting equivocation.

@@ -15,23 +15,23 @@ import (
 	"sync"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/consensus"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
-	"layer1/db"
-	"layer1/keystore"
-	"layer1/metrics"
-	"layer1/miner"
-	"layer1/p2p"
-	"layer1/rpc"
-	"layer1/state"
-	"layer1/txpool"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/consensus"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/db"
+	"padi-chain/keystore"
+	"padi-chain/metrics"
+	"padi-chain/miner"
+	"padi-chain/p2p"
+	"padi-chain/rpc"
+	"padi-chain/state"
+	"padi-chain/txpool"
 )
 
 // Version identifies this software over the wire and in the RPC.
-const Version = "layer1/v0.1.0"
+const Version = "padi-chain/v0.1.0"
 
 // Config configures a node.
 type Config struct {
@@ -103,7 +103,7 @@ func New(config *Config) (*Node, error) {
 		config.Logger = slog.Default()
 	}
 	if config.NodeName == "" {
-		config.NodeName = "layer1"
+		config.NodeName = "padi-chain"
 	}
 	if config.MaxPeers == 0 {
 		config.MaxPeers = 25
@@ -120,7 +120,7 @@ func New(config *Config) (*Node, error) {
 		}
 		loaded, err := chain.LoadGenesis(config.GenesisPath)
 		if err != nil {
-			return nil, fmt.Errorf("node: %w (run `layer1 init` first)", err)
+			return nil, fmt.Errorf("node: %w (run `padi-chain init` first)", err)
 		}
 		genesis = loaded
 	}

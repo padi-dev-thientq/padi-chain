@@ -33,7 +33,7 @@ func TestKnownVectors(t *testing.T) {
 }
 
 func TestStreamingMatchesOneShot(t *testing.T) {
-	data := []byte(strings.Repeat("layer1", 500))
+	data := []byte(strings.Repeat("padi-chain", 500))
 	want := Sum160(data)
 
 	d := New()

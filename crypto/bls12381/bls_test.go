@@ -12,7 +12,7 @@ func TestSignAndVerify(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub := key.PublicKey()
-	msg := []byte("layer1 attests to block 42")
+	msg := []byte("padi-chain attests to block 42")
 
 	sig := key.Sign(msg)
 	if !Verify(pub, msg, sig) {

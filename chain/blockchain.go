@@ -6,15 +6,15 @@ import (
 	"math/big"
 	"sync"
 
-	"layer1/common"
-	"layer1/consensus"
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/db"
-	"layer1/processor"
-	"layer1/staking"
-	"layer1/state"
-	"layer1/trie"
+	"padi-chain/common"
+	"padi-chain/consensus"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/db"
+	"padi-chain/processor"
+	"padi-chain/staking"
+	"padi-chain/state"
+	"padi-chain/trie"
 )
 
 var (

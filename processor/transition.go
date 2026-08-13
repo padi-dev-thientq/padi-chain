@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/evm"
-	"layer1/staking"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/evm"
+	"padi-chain/staking"
+	"padi-chain/state"
 )
 
 // Errors that make a transaction inadmissible. These are checked before any

@@ -4,7 +4,7 @@ import (
 	"encoding/binary"
 	"math/big"
 
-	"layer1/crypto/keccak"
+	"padi-chain/crypto/keccak"
 )
 
 // Hashing a message to a curve point.
@@ -53,7 +53,7 @@ func hashToFp2(domain string, message []byte, counter uint32) *Fp2 {
 // clearing. It returns nil if this counter yields no point, and the caller
 // tries the next one.
 func mapToG2Uncleared(message []byte, counter uint32) *G2 {
-	x := hashToFp2("layer1/bls12381/hash-to-g2/v1", message, counter)
+	x := hashToFp2("padi-chain/bls12381/hash-to-g2/v1", message, counter)
 
 	// Walk upward from the derived abscissa until the curve equation has a
 	// solution. Roughly half of all x values work, so this terminates quickly.

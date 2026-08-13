@@ -6,9 +6,9 @@ import (
 	"math/big"
 	"sync"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/bls12381"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
 )
 
 var (

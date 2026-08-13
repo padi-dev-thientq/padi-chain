@@ -9,11 +9,11 @@ import (
 	"sort"
 	"sync"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/evm"
-	"layer1/processor"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/evm"
+	"padi-chain/processor"
+	"padi-chain/state"
 )
 
 // Rejection reasons. A transaction that fails any of these is never stored, so

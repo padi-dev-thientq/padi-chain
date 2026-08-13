@@ -20,8 +20,8 @@ import (
 	"errors"
 	"fmt"
 
-	"layer1/common"
-	"layer1/db"
+	"padi-chain/common"
+	"padi-chain/db"
 )
 
 // EmptyRoot is the root hash of a trie with no entries: keccak256(rlp("")).

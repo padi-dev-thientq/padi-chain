@@ -66,16 +66,16 @@ func TestHistogramDuration(t *testing.T) {
 
 func TestPrometheusFormat(t *testing.T) {
 	r := NewRegistry()
-	r.Counter("layer1_blocks_total", "Blocks seen.").Add(3)
-	r.Gauge("layer1_peers", "Connected peers.").Set(5)
+	r.Counter("padi_blocks_total", "Blocks seen.").Add(3)
+	r.Gauge("padi_peers", "Connected peers.").Set(5)
 
 	out := r.Render()
 	for _, want := range []string{
-		"# HELP layer1_blocks_total Blocks seen.",
-		"# TYPE layer1_blocks_total counter",
-		"layer1_blocks_total 3",
-		"# TYPE layer1_peers gauge",
-		"layer1_peers 5",
+		"# HELP padi_blocks_total Blocks seen.",
+		"# TYPE padi_blocks_total counter",
+		"padi_blocks_total 3",
+		"# TYPE padi_peers gauge",
+		"padi_peers 5",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -118,7 +118,7 @@ func TestConcurrentUpdates(t *testing.T) {
 	if got := m.BlocksImported.Value(); got != 2000 {
 		t.Fatalf("counter lost updates under concurrency: %d, want 2000", got)
 	}
-	if !strings.Contains(m.Render(), "layer1_block_execution_seconds_count 2000") {
+	if !strings.Contains(m.Render(), "padi_block_execution_seconds_count 2000") {
 		t.Fatal("histogram lost observations under concurrency")
 	}
 }
@@ -129,8 +129,8 @@ func TestNodeMetricsAreNamedConsistently(t *testing.T) {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		if !strings.HasPrefix(line, "layer1_") {
-			t.Errorf("metric is missing the layer1_ prefix: %q", line)
+		if !strings.HasPrefix(line, "padi_") {
+			t.Errorf("metric is missing the padi_ prefix: %q", line)
 		}
 	}
 }

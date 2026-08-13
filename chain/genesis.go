@@ -6,12 +6,12 @@ import (
 	"math/big"
 	"os"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/db"
-	"layer1/staking"
-	"layer1/state"
-	"layer1/trie"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/db"
+	"padi-chain/staking"
+	"padi-chain/state"
+	"padi-chain/trie"
 )
 
 // GenesisAccount is a pre-funded account in the genesis state.
@@ -51,7 +51,7 @@ func DefaultGenesis(chainID *big.Int, validators []common.Address) *Genesis {
 		Timestamp:   0,
 		GasLimit:    30_000_000,
 		BaseFee:     big.NewInt(1_000_000_000),
-		ExtraData:   []byte("layer1 genesis"),
+		ExtraData:   []byte("padi-chain genesis"),
 		Alloc:       make(map[common.Address]GenesisAccount),
 		Validators:  validators,
 		BlockPeriod: 2,

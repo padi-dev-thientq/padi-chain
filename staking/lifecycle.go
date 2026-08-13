@@ -5,8 +5,8 @@ import (
 	"math/big"
 	"sort"
 
-	"layer1/common"
-	"layer1/crypto/bls12381"
+	"padi-chain/common"
+	"padi-chain/crypto/bls12381"
 )
 
 // The validator lifecycle.
@@ -118,7 +118,7 @@ func (m *Manager) Deposit(validator, withdrawal common.Address, amount *big.Int,
 // list real keys, because a derived key is one whose secret is known to anyone
 // who can read the address.
 func DeriveGenesisBLSKey(validator common.Address) *bls12381.SecretKey {
-	return bls12381.DeriveSecretKey(append([]byte("layer1/genesis-validator/v1"), validator[:]...))
+	return bls12381.DeriveSecretKey(append([]byte("padi-chain/genesis-validator/v1"), validator[:]...))
 }
 
 // RequestExit begins a validator's voluntary departure.

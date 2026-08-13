@@ -7,9 +7,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"layer1/common"
-	"layer1/rlp"
-	"layer1/trie"
+	"padi-chain/common"
+	"padi-chain/rlp"
+	"padi-chain/trie"
 )
 
 // Header is the block header: the part of a block that consensus commits to.

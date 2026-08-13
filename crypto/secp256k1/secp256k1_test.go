@@ -5,7 +5,7 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/crypto/keccak"
+	"padi-chain/crypto/keccak"
 )
 
 func hashOf(s string) []byte {
@@ -81,7 +81,7 @@ func TestSignVerifyRecover(t *testing.T) {
 		t.Fatal(err)
 	}
 	pub := key.PublicKey()
-	hash := hashOf("layer1 says hello")
+	hash := hashOf("padi-chain says hello")
 
 	sig, err := Sign(key, hash)
 	if err != nil {

@@ -16,10 +16,10 @@ import (
 	"fmt"
 	"sync"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/db"
-	"layer1/trie"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/db"
+	"padi-chain/trie"
 )
 
 var (

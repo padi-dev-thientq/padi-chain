@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/db"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/db"
+	"padi-chain/rlp"
 )
 
 // Key prefixes namespace the different record types inside the shared store.

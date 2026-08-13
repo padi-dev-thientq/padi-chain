@@ -6,8 +6,8 @@ import (
 	"math/big"
 	"sort"
 
-	"layer1/common"
-	"layer1/crypto/bls12381"
+	"padi-chain/common"
+	"padi-chain/crypto/bls12381"
 )
 
 // An attestation is a validator's signed statement that a block is the one it

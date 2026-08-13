@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/evm"
-	"layer1/staking"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/evm"
+	"padi-chain/staking"
+	"padi-chain/state"
 )
 
 // ChainContext gives the processor access to the chain it is extending, which

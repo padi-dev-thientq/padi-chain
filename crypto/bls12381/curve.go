@@ -4,7 +4,7 @@ import (
 	"errors"
 	"math/big"
 
-	"layer1/crypto/keccak"
+	"padi-chain/crypto/keccak"
 )
 
 var (
@@ -190,7 +190,7 @@ func G2Generator() *G2 { return g2Generator.Clone() }
 
 func deriveG1Generator() *G1 {
 	for counter := uint32(0); ; counter++ {
-		seed := keccak.Sum256([]byte("layer1/bls12381/g1-generator"), []byte{
+		seed := keccak.Sum256([]byte("padi-chain/bls12381/g1-generator"), []byte{
 			byte(counter >> 24), byte(counter >> 16), byte(counter >> 8), byte(counter),
 		})
 		x := feFromBig(new(big.Int).SetBytes(seed[:]))
@@ -210,7 +210,7 @@ func deriveG1Generator() *G1 {
 
 func deriveG2Generator() *G2 {
 	for counter := uint32(0); ; counter++ {
-		point := mapToG2Uncleared([]byte("layer1/bls12381/g2-generator"), counter)
+		point := mapToG2Uncleared([]byte("padi-chain/bls12381/g2-generator"), counter)
 		if point == nil {
 			continue
 		}

@@ -5,12 +5,12 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/bls12381"
-	"layer1/rlp"
-	"layer1/staking"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/bls12381"
+	"padi-chain/rlp"
+	"padi-chain/staking"
+	"padi-chain/state"
 )
 
 // Staking operations arrive as ordinary transactions addressed to the staking

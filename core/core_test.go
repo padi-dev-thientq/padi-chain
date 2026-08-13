@@ -4,8 +4,8 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/crypto/secp256k1"
+	"padi-chain/common"
+	"padi-chain/crypto/secp256k1"
 )
 
 func testKey(t *testing.T) *secp256k1.PrivateKey {
@@ -286,7 +286,7 @@ func TestBlockWireRoundTrip(t *testing.T) {
 		GasLimit:   30_000_000,
 		Time:       1700000000,
 		BaseFee:    big.NewInt(7),
-		Extra:      []byte("layer1"),
+		Extra:      []byte("padi-chain"),
 	}, Transactions{tx}, Receipts{NewReceipt(LegacyTxType, ReceiptStatusSuccessful, 21000, nil)})
 
 	enc, err := block.MarshalBinary()

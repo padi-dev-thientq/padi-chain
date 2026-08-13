@@ -1,3 +1,3 @@
-module layer1
+module padi-chain
 
 go 1.26

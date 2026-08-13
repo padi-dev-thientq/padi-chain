@@ -5,8 +5,8 @@ import (
 	"errors"
 	"math/big"
 
-	"layer1/common"
-	"layer1/crypto/secp256k1"
+	"padi-chain/common"
+	"padi-chain/crypto/secp256k1"
 )
 
 // PrecompiledContract is a contract implemented natively rather than in

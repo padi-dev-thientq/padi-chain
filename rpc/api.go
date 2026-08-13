@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/core"
-	"layer1/evm"
-	"layer1/processor"
-	"layer1/state"
-	"layer1/txpool"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/evm"
+	"padi-chain/processor"
+	"padi-chain/state"
+	"padi-chain/txpool"
 )
 
 // Backend is everything the API needs from the node.
@@ -65,9 +65,9 @@ func RegisterAll(s *Server, backend Backend) {
 	s.Register("eth_syncing", api.syncing)
 
 	s.Register("txpool_status", api.txpoolStatus)
-	s.Register("layer1_validators", api.validators)
-	s.Register("layer1_validatorInfo", api.validatorInfo)
-	s.Register("layer1_nodeInfo", api.nodeInfo)
+	s.Register("padi_validators", api.validators)
+	s.Register("padi_validatorInfo", api.validatorInfo)
+	s.Register("padi_nodeInfo", api.nodeInfo)
 }
 
 // --- parameter helpers ---

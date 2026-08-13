@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/crypto/keccak"
+	"padi-chain/crypto/keccak"
 )
 
 const (
@@ -169,7 +169,7 @@ func ParsePublicKey(b []byte) (*PublicKey, error) {
 // case that a candidate is out of range.
 func nonce(d *big.Int, hash []byte, counter uint32) *big.Int {
 	ctr := []byte{byte(counter >> 24), byte(counter >> 16), byte(counter >> 8), byte(counter)}
-	h := keccak.Sum256([]byte("layer1/secp256k1/nonce/v1"), padTo32(d), hash, ctr)
+	h := keccak.Sum256([]byte("padi-chain/secp256k1/nonce/v1"), padTo32(d), hash, ctr)
 	return new(big.Int).SetBytes(h[:])
 }
 
@@ -395,6 +395,6 @@ func ECDH(priv *PrivateKey, pub *PublicKey) ([]byte, error) {
 	if !ok {
 		return nil, ErrInvalidPoint
 	}
-	sum := keccak.Sum256([]byte("layer1/ecdh/v1"), padTo32(x))
+	sum := keccak.Sum256([]byte("padi-chain/ecdh/v1"), padTo32(x))
 	return sum[:], nil
 }

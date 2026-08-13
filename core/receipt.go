@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/common"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/rlp"
 )
 
 // Receipt statuses.

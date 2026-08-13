@@ -7,9 +7,9 @@ import (
 	"math/big"
 	"sync/atomic"
 
-	"layer1/common"
-	"layer1/crypto/secp256k1"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/rlp"
 )
 
 // Transaction types. Legacy transactions have no type byte; typed transactions

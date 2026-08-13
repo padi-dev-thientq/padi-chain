@@ -5,11 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/core"
-	"layer1/node"
-	"layer1/staking"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/node"
+	"padi-chain/staking"
 )
 
 func TestSnapshotSync(t *testing.T) {

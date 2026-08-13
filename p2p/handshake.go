@@ -13,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"layer1/common"
-	"layer1/crypto/keccak"
-	"layer1/crypto/secp256k1"
+	"padi-chain/common"
+	"padi-chain/crypto/keccak"
+	"padi-chain/crypto/secp256k1"
 )
 
 // The peer handshake.
@@ -85,7 +85,7 @@ type session struct {
 
 // deriveKey mixes the shared secret with the transcript under a label.
 func deriveKey(shared, transcript []byte, label string) []byte {
-	sum := keccak.Sum256([]byte("layer1/p2p/kdf/v1"), []byte(label), shared, transcript)
+	sum := keccak.Sum256([]byte("padi-chain/p2p/kdf/v1"), []byte(label), shared, transcript)
 	return sum[:]
 }
 
@@ -101,7 +101,7 @@ func newAEAD(key []byte) (cipher.AEAD, error) {
 // initiator's material always comes first so both sides compute it identically.
 func handshakeTranscript(initiatorEph, initiatorNonce, responderEph, responderNonce []byte) []byte {
 	sum := keccak.Sum256(
-		[]byte("layer1/p2p/handshake/v1"),
+		[]byte("padi-chain/p2p/handshake/v1"),
 		initiatorEph, initiatorNonce,
 		responderEph, responderNonce,
 	)

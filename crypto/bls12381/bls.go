@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math/big"
 
-	"layer1/crypto/keccak"
+	"padi-chain/crypto/keccak"
 )
 
 // The BLS signature scheme.
@@ -33,8 +33,8 @@ const (
 // disjoint: without that, a proof of possession could be replayed as an
 // attestation.
 const (
-	domainSignature  = "layer1/bls/signature/v1"
-	domainPossession = "layer1/bls/proof-of-possession/v1"
+	domainSignature  = "padi-chain/bls/signature/v1"
+	domainPossession = "padi-chain/bls/proof-of-possession/v1"
 )
 
 var (
@@ -84,7 +84,7 @@ func SecretKeyFromBytes(b []byte) (*SecretKey, error) {
 // operator manages one secret rather than two.
 func DeriveSecretKey(seed []byte) *SecretKey {
 	for counter := byte(0); ; counter++ {
-		h := keccak.Sum256([]byte("layer1/bls/derive/v1"), seed, []byte{counter})
+		h := keccak.Sum256([]byte("padi-chain/bls/derive/v1"), seed, []byte{counter})
 		s := new(big.Int).Mod(new(big.Int).SetBytes(h[:]), Order)
 		if s.Sign() != 0 {
 			return &SecretKey{s: s}

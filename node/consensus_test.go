@@ -5,12 +5,12 @@ import (
 	"testing"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
-	"layer1/keystore"
-	"layer1/node"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/keystore"
+	"padi-chain/node"
 )
 
 // newValidatorSet returns n keys and their addresses.

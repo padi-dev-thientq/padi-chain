@@ -3,7 +3,7 @@ package evm
 import (
 	"sync"
 
-	"layer1/uint256"
+	"padi-chain/uint256"
 )
 
 // Memory is the contract's linear byte-addressed scratch space. It grows in

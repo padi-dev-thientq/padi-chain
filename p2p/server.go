@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
 )
 
 // Backend is what the network layer needs from the node.
@@ -67,7 +67,7 @@ func DefaultConfig(listenAddr string) *Config {
 	return &Config{
 		ListenAddr:   listenAddr,
 		MaxPeers:     25,
-		NodeName:     "layer1",
+		NodeName:     "padi-chain",
 		PingInterval: 15 * time.Second,
 		DialRetry:    10 * time.Second,
 	}

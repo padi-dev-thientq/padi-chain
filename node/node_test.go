@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"layer1/chain"
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
-	"layer1/evm"
-	"layer1/keystore"
-	"layer1/node"
+	"padi-chain/chain"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/evm"
+	"padi-chain/keystore"
+	"padi-chain/node"
 )
 
 var testChainID = big.NewInt(4242)
@@ -671,11 +671,11 @@ func TestMonitoringEndpoints(t *testing.T) {
 		text := string(body)
 
 		for _, want := range []string{
-			"layer1_chain_head",
-			"layer1_chain_finalized",
-			"layer1_blocks_produced_total",
-			"layer1_peers",
-			"layer1_txpool_pending",
+			"padi_chain_head",
+			"padi_chain_finalized",
+			"padi_blocks_produced_total",
+			"padi_peers",
+			"padi_txpool_pending",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("metric %s is missing from the scrape", want)

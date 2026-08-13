@@ -3,8 +3,8 @@ package node
 import (
 	"time"
 
-	"layer1/chain"
-	"layer1/db"
+	"padi-chain/chain"
+	"padi-chain/db"
 )
 
 // Background maintenance.

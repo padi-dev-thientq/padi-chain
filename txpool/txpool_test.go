@@ -5,11 +5,11 @@ import (
 	"math/big"
 	"testing"
 
-	"layer1/common"
-	"layer1/core"
-	"layer1/crypto/secp256k1"
-	"layer1/db"
-	"layer1/state"
+	"padi-chain/common"
+	"padi-chain/core"
+	"padi-chain/crypto/secp256k1"
+	"padi-chain/db"
+	"padi-chain/state"
 )
 
 var testChainID = big.NewInt(1337)

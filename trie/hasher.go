@@ -3,9 +3,9 @@ package trie
 import (
 	"fmt"
 
-	"layer1/common"
-	"layer1/db"
-	"layer1/rlp"
+	"padi-chain/common"
+	"padi-chain/db"
+	"padi-chain/rlp"
 )
 
 // encodeNode serializes a node to its RLP form. Children are replaced by their
