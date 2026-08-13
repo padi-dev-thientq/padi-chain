@@ -15,18 +15,19 @@ var (
 
 // G1 is a point on y^2 = x^3 + 4 over Fp, in affine coordinates.
 type G1 struct {
-	X, Y     *big.Int
+	X, Y     fe
 	Infinity bool
 }
 
 // G1Zero returns the point at infinity.
-func G1Zero() *G1 { return &G1{X: new(big.Int), Y: new(big.Int), Infinity: true} }
+func G1Zero() *G1 { return &G1{Infinity: true} }
 
 func (p *G1) Clone() *G1 {
 	if p.Infinity {
 		return G1Zero()
 	}
-	return &G1{X: new(big.Int).Set(p.X), Y: new(big.Int).Set(p.Y)}
+	out := *p
+	return &out
 }
 
 // OnCurve reports whether the point satisfies the curve equation.
@@ -34,12 +35,9 @@ func (p *G1) OnCurve() bool {
 	if p.Infinity {
 		return true
 	}
-	if p.X.Sign() < 0 || p.X.Cmp(P) >= 0 || p.Y.Sign() < 0 || p.Y.Cmp(P) >= 0 {
-		return false
-	}
 	lhs := fpMul(p.Y, p.Y)
 	rhs := fpAdd(fpMul(fpMul(p.X, p.X), p.X), curveB)
-	return lhs.Cmp(rhs) == 0
+	return lhs == rhs
 }
 
 // InSubgroup reports whether the point has the prime order r. A public key
@@ -53,14 +51,14 @@ func (p *G1) Equal(q *G1) bool {
 	if p.Infinity || q.Infinity {
 		return p.Infinity == q.Infinity
 	}
-	return p.X.Cmp(q.X) == 0 && p.Y.Cmp(q.Y) == 0
+	return p.X == q.X && p.Y == q.Y
 }
 
 func (p *G1) Neg() *G1 {
 	if p.Infinity {
 		return G1Zero()
 	}
-	return &G1{X: new(big.Int).Set(p.X), Y: fpNeg(p.Y)}
+	return &G1{X: p.X, Y: fpNeg(p.Y)}
 }
 
 func (p *G1) Add(q *G1) *G1 {
@@ -70,8 +68,8 @@ func (p *G1) Add(q *G1) *G1 {
 	if q.Infinity {
 		return p.Clone()
 	}
-	if p.X.Cmp(q.X) == 0 {
-		if p.Y.Cmp(q.Y) != 0 {
+	if p.X == q.X {
+		if p.Y != q.Y {
 			return G1Zero()
 		}
 		return p.double()
@@ -86,9 +84,9 @@ func (p *G1) double() *G1 {
 	if p.Infinity || fpIsZero(p.Y) {
 		return G1Zero()
 	}
-	num := fpMul(big.NewInt(3), fpMul(p.X, p.X))
-	lambda := fpMul(num, fpInv(fpMul(bigTwo, p.Y)))
-	x := fpSub(fpMul(lambda, lambda), fpMul(bigTwo, p.X))
+	num := fpMul(feThree, fpMul(p.X, p.X))
+	lambda := fpMul(num, fpInv(fpMul(feTwo, p.Y)))
+	x := fpSub(fpMul(lambda, lambda), fpMul(feTwo, p.X))
 	y := fpSub(fpMul(lambda, fpSub(p.X, x)), p.Y)
 	return &G1{X: x, Y: y}
 }
@@ -162,8 +160,7 @@ func (p *G2) double() *G2 {
 	if p.Infinity || p.Y.IsZero() {
 		return G2Zero()
 	}
-	three := newFp2(big.NewInt(3), new(big.Int))
-	num := fp2Mul(three, fp2Square(p.X))
+	num := fp2Mul(fp2Three, fp2Square(p.X))
 	lambda := fp2Mul(num, fp2Inv(fp2Add(p.Y, p.Y)))
 	x := fp2Sub(fp2Square(lambda), fp2Add(p.X, p.X))
 	y := fp2Sub(fp2Mul(lambda, fp2Sub(p.X, x)), p.Y)
@@ -196,12 +193,12 @@ func deriveG1Generator() *G1 {
 		seed := keccak.Sum256([]byte("layer1/bls12381/g1-generator"), []byte{
 			byte(counter >> 24), byte(counter >> 16), byte(counter >> 8), byte(counter),
 		})
-		x := new(big.Int).Mod(new(big.Int).SetBytes(seed[:]), P)
+		x := feFromBig(new(big.Int).SetBytes(seed[:]))
 
 		// y^2 = x^3 + 4
 		rhs := fpAdd(fpMul(fpMul(x, x), x), curveB)
-		y := fpSqrt(rhs)
-		if y == nil {
+		y, ok := fpSqrtBase(rhs)
+		if !ok {
 			continue
 		}
 		candidate := (&G1{X: x, Y: y}).ScalarMul(G1Cofactor)
@@ -224,13 +221,9 @@ func deriveG2Generator() *G2 {
 	}
 }
 
-// fpSqrt returns a square root in the base field, or nil when none exists.
-// p ≡ 3 (mod 4), so a candidate is a^((p+1)/4).
-func fpSqrt(a *big.Int) *big.Int {
-	exp := new(big.Int).Rsh(new(big.Int).Add(P, bigOne), 2)
-	candidate := new(big.Int).Exp(a, exp, P)
-	if fpMul(candidate, candidate).Cmp(new(big.Int).Mod(a, P)) != 0 {
-		return nil
-	}
-	return candidate
-}
+// Small constants in Montgomery form.
+var (
+	feTwo    = feFromBig(bigTwo)
+	feThree  = feFromBig(big.NewInt(3))
+	fp2Three = newFp2FromInt(3, 0)
+)

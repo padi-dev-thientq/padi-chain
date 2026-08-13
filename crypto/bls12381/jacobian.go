@@ -12,17 +12,17 @@ import "math/big"
 // tens of milliseconds, and it is on the path of every signature.
 
 // jacobianG1 represents the affine point (X/Z^2, Y/Z^3). Z == 0 is infinity.
-type jacobianG1 struct{ X, Y, Z *big.Int }
+type jacobianG1 struct{ X, Y, Z fe }
 
 func (p *G1) toJacobian() *jacobianG1 {
 	if p.Infinity {
-		return &jacobianG1{X: big.NewInt(1), Y: big.NewInt(1), Z: new(big.Int)}
+		return &jacobianG1{X: feOne, Y: feOne}
 	}
-	return &jacobianG1{X: new(big.Int).Set(p.X), Y: new(big.Int).Set(p.Y), Z: big.NewInt(1)}
+	return &jacobianG1{X: p.X, Y: p.Y, Z: feOne}
 }
 
 func (j *jacobianG1) toAffine() *G1 {
-	if j.Z.Sign() == 0 {
+	if fpIsZero(j.Z) {
 		return G1Zero()
 	}
 	zInv := fpInv(j.Z)
@@ -32,8 +32,8 @@ func (j *jacobianG1) toAffine() *G1 {
 }
 
 func (j *jacobianG1) double() *jacobianG1 {
-	if j.Z.Sign() == 0 || j.Y.Sign() == 0 {
-		return &jacobianG1{X: big.NewInt(1), Y: big.NewInt(1), Z: new(big.Int)}
+	if fpIsZero(j.Z) || fpIsZero(j.Y) {
+		return &jacobianG1{X: feOne, Y: feOne}
 	}
 	a := fpMul(j.X, j.X)
 	b := fpMul(j.Y, j.Y)
@@ -61,18 +61,18 @@ func (j *jacobianG1) addAffine(q *G1) *jacobianG1 {
 	if q.Infinity {
 		return j
 	}
-	if j.Z.Sign() == 0 {
+	if fpIsZero(j.Z) {
 		return q.toJacobian()
 	}
 	z1z1 := fpMul(j.Z, j.Z)
 	u2 := fpMul(q.X, z1z1)
 	s2 := fpMul(fpMul(q.Y, j.Z), z1z1)
 
-	if j.X.Cmp(u2) == 0 {
-		if j.Y.Cmp(s2) == 0 {
+	if j.X == u2 {
+		if j.Y == s2 {
 			return j.double()
 		}
-		return &jacobianG1{X: big.NewInt(1), Y: big.NewInt(1), Z: new(big.Int)}
+		return &jacobianG1{X: feOne, Y: feOne}
 	}
 
 	h := fpSub(u2, j.X)
@@ -99,7 +99,7 @@ func scalarMulJacobian(p *G1, k *big.Int) *G1 {
 	if k.Sign() == 0 || p.Infinity {
 		return G1Zero()
 	}
-	acc := &jacobianG1{X: big.NewInt(1), Y: big.NewInt(1), Z: new(big.Int)}
+	acc := &jacobianG1{X: feOne, Y: feOne}
 	for i := k.BitLen() - 1; i >= 0; i-- {
 		acc = acc.double()
 		if k.Bit(i) == 1 {

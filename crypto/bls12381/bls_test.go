@@ -256,13 +256,14 @@ func TestMalformedEncodingsRejected(t *testing.T) {
 
 	// A point on the curve but outside the prime-order subgroup must be
 	// refused: it is the input that breaks the pairing's guarantees.
-	for x := big.NewInt(1); x.Cmp(big.NewInt(200)) < 0; x.Add(x, big.NewInt(1)) {
+	for i := int64(1); i < 200; i++ {
+		x := feFromBig(big.NewInt(i))
 		rhs := fpAdd(fpMul(fpMul(x, x), x), curveB)
-		y := fpSqrt(rhs)
-		if y == nil {
+		y, ok := fpSqrtBase(rhs)
+		if !ok {
 			continue
 		}
-		point := &G1{X: new(big.Int).Set(x), Y: y}
+		point := &G1{X: x, Y: y}
 		if point.InSubgroup() {
 			continue
 		}

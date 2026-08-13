@@ -43,9 +43,10 @@ func hashToFp2(domain string, message []byte, counter uint32) *Fp2 {
 
 	// Two 64-byte halves reduced mod p give each coefficient close to uniform:
 	// the excess over p is smaller than 2^-128 of the range.
-	c0 := new(big.Int).Mod(new(big.Int).SetBytes(raw[:64]), P)
-	c1 := new(big.Int).Mod(new(big.Int).SetBytes(raw[64:]), P)
-	return newFp2(c0, c1)
+	return newFp2(
+		feFromBig(new(big.Int).SetBytes(raw[:64])),
+		feFromBig(new(big.Int).SetBytes(raw[64:])),
+	)
 }
 
 // mapToG2Uncleared finds a curve point from a message, before cofactor
@@ -61,11 +62,7 @@ func mapToG2Uncleared(message []byte, counter uint32) *G2 {
 		if y := fp2Sqrt(rhs); y != nil {
 			// Fix the sign deterministically, so the same message always maps
 			// to the same point.
-			if y.C1.Sign() != 0 {
-				if y.C1.Bit(0) == 1 {
-					y = fp2Neg(y)
-				}
-			} else if y.C0.Bit(0) == 1 {
+			if isFp2LexicographicallyLarger(y) {
 				y = fp2Neg(y)
 			}
 			return &G2{X: x, Y: y}

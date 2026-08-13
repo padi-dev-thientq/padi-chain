@@ -285,7 +285,7 @@ func (p *PublicKey) Bytes() []byte {
 		out[0] = flagCompressed | flagInfinity
 		return out
 	}
-	p.p.X.FillBytes(out)
+	p.p.X.Big().FillBytes(out)
 	out[0] |= flagCompressed
 	// The larger of the two roots is marked, so the decoder can pick the right
 	// one from x alone.
@@ -315,16 +315,17 @@ func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
 	if x.Cmp(P) >= 0 {
 		return nil, fmt.Errorf("%w: x is not a field element", ErrBadEncoding)
 	}
-	rhs := fpAdd(fpMul(fpMul(x, x), x), curveB)
-	y := fpSqrt(rhs)
-	if y == nil {
+	xf := feFromBig(x)
+	rhs := fpAdd(fpMul(fpMul(xf, xf), xf), curveB)
+	y, ok := fpSqrtBase(rhs)
+	if !ok {
 		return nil, fmt.Errorf("%w: no curve point has this abscissa", ErrNotOnCurve)
 	}
 	if isLexicographicallyLarger(y) != sign {
 		y = fpNeg(y)
 	}
 
-	point := &G1{X: x, Y: y}
+	point := &G1{X: xf, Y: y}
 	// A key outside the prime-order subgroup would let an attacker construct
 	// relations the pairing is supposed to rule out, so it is refused here
 	// rather than trusted later.
@@ -342,8 +343,8 @@ func (s *Signature) Bytes() []byte {
 		return out
 	}
 	// The imaginary coefficient comes first, matching the usual convention.
-	s.p.X.C1.FillBytes(out[:48])
-	s.p.X.C0.FillBytes(out[48:])
+	s.p.X.C1.Big().FillBytes(out[:48])
+	s.p.X.C0.Big().FillBytes(out[48:])
 	out[0] |= flagCompressed
 	if isFp2LexicographicallyLarger(s.p.Y) {
 		out[0] |= flagSign
@@ -373,7 +374,7 @@ func SignatureFromBytes(b []byte) (*Signature, error) {
 		return nil, fmt.Errorf("%w: coordinate is not a field element", ErrBadEncoding)
 	}
 
-	x := newFp2(x0, x1)
+	x := newFp2(feFromBig(x0), feFromBig(x1))
 	rhs := fp2Add(fp2Mul(fp2Square(x), x), twistB)
 	y := fp2Sqrt(rhs)
 	if y == nil {
@@ -390,14 +391,17 @@ func SignatureFromBytes(b []byte) (*Signature, error) {
 	return &Signature{p: point}, nil
 }
 
-// isLexicographicallyLarger reports whether y is the larger of the pair {y, -y}.
-func isLexicographicallyLarger(y *big.Int) bool {
-	half := new(big.Int).Rsh(P, 1)
-	return y.Cmp(half) > 0
+// isLexicographicallyLarger reports whether y is the larger of the pair
+// {y, -y}. Recording which one a compressed point carries is what lets the
+// decoder pick the right root from x alone.
+var halfModulus = new(big.Int).Rsh(P, 1)
+
+func isLexicographicallyLarger(y fe) bool {
+	return y.Big().Cmp(halfModulus) > 0
 }
 
 func isFp2LexicographicallyLarger(y *Fp2) bool {
-	if y.C1.Sign() != 0 {
+	if !fpIsZero(y.C1) {
 		return isLexicographicallyLarger(y.C1)
 	}
 	return isLexicographicallyLarger(y.C0)

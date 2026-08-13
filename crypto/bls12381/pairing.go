@@ -28,8 +28,8 @@ import "math/big"
 // With w^2 = v, the w^3 term lands in the v coefficient of the w half and the
 // w^5 term in the v^2 coefficient.
 func lineFrom(lambda, x1, y1 *Fp2, p *G1) *Fp12 {
-	yp := newFp2(new(big.Int).Set(p.Y), new(big.Int))
-	xp := newFp2(new(big.Int).Set(p.X), new(big.Int))
+	yp := newFp2(p.Y, feZero)
+	xp := newFp2(p.X, feZero)
 
 	c0 := newFp6(fp2MulXi(yp), fp2Zero(), fp2Zero())
 	c1 := newFp6(
@@ -44,8 +44,7 @@ func doublingStep(t *G2, p *G1) (*Fp12, *G2) {
 	if t.Infinity || t.Y.IsZero() {
 		return fp12One(), G2Zero()
 	}
-	three := newFp2(big.NewInt(3), new(big.Int))
-	lambda := fp2Mul(fp2Mul(three, fp2Square(t.X)), fp2Inv(fp2Add(t.Y, t.Y)))
+	lambda := fp2Mul(fp2Mul(fp2Three, fp2Square(t.X)), fp2Inv(fp2Add(t.Y, t.Y)))
 	line := lineFrom(lambda, t.X, t.Y, p)
 
 	x := fp2Sub(fp2Square(lambda), fp2Add(t.X, t.X))

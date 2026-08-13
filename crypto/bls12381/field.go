@@ -85,35 +85,45 @@ var (
 	bigZero = big.NewInt(0)
 	bigOne  = big.NewInt(1)
 	bigTwo  = big.NewInt(2)
-	// curveB is the constant in y^2 = x^3 + 4 over the base field.
-	curveB = big.NewInt(4)
+	// curveBBig is the constant in y^2 = x^3 + 4, before conversion.
+	curveBBig = big.NewInt(4)
 )
 
 // --- Fp ---
+//
+// Field elements are held in Montgomery form; these are the operations the
+// extension tower and the curves are written against.
 
-func fpAdd(a, b *big.Int) *big.Int { return new(big.Int).Mod(new(big.Int).Add(a, b), P) }
-func fpSub(a, b *big.Int) *big.Int { return new(big.Int).Mod(new(big.Int).Sub(a, b), P) }
-func fpMul(a, b *big.Int) *big.Int { return new(big.Int).Mod(new(big.Int).Mul(a, b), P) }
-func fpNeg(a *big.Int) *big.Int    { return new(big.Int).Mod(new(big.Int).Neg(a), P) }
-func fpInv(a *big.Int) *big.Int    { return new(big.Int).ModInverse(a, P) }
+func fpAdd(a, b fe) fe { return montAdd(&a, &b) }
+func fpSub(a, b fe) fe { return montSub(&a, &b) }
+func fpMul(a, b fe) fe { return montMul(&a, &b) }
+func fpNeg(a fe) fe    { return montNeg(&a) }
+func fpInv(a fe) fe    { return montInv(&a) }
 
-func fpIsZero(a *big.Int) bool { return a.Sign() == 0 }
+func fpIsZero(a fe) bool { return a.IsZero() }
+
+// fpZero and fpOne are the field's identities.
+func fpZero() fe { return feZero }
+func fpOne() fe  { return feOne }
 
 // --- Fp2 = Fp[u]/(u^2 + 1) ---
 
 // Fp2 is an element c0 + c1*u.
-type Fp2 struct{ C0, C1 *big.Int }
+type Fp2 struct{ C0, C1 fe }
 
-func newFp2(c0, c1 *big.Int) *Fp2 { return &Fp2{C0: c0, C1: c1} }
-func fp2Zero() *Fp2               { return &Fp2{C0: new(big.Int), C1: new(big.Int)} }
-func fp2One() *Fp2                { return &Fp2{C0: big.NewInt(1), C1: new(big.Int)} }
+func newFp2(c0, c1 fe) *Fp2 { return &Fp2{C0: c0, C1: c1} }
+func fp2Zero() *Fp2         { return &Fp2{} }
+func fp2One() *Fp2          { return &Fp2{C0: feOne} }
+
+// newFp2FromInt builds an element from small integers, for constants and tests.
+func newFp2FromInt(c0, c1 int64) *Fp2 {
+	return &Fp2{C0: feFromBig(big.NewInt(c0)), C1: feFromBig(big.NewInt(c1))}
+}
 
 func (a *Fp2) IsZero() bool      { return fpIsZero(a.C0) && fpIsZero(a.C1) }
-func (a *Fp2) Equal(b *Fp2) bool { return a.C0.Cmp(b.C0) == 0 && a.C1.Cmp(b.C1) == 0 }
+func (a *Fp2) Equal(b *Fp2) bool { return a.C0 == b.C0 && a.C1 == b.C1 }
 
-func (a *Fp2) Clone() *Fp2 {
-	return &Fp2{C0: new(big.Int).Set(a.C0), C1: new(big.Int).Set(a.C1)}
-}
+func (a *Fp2) Clone() *Fp2 { out := *a; return &out }
 
 func fp2Add(a, b *Fp2) *Fp2 { return newFp2(fpAdd(a.C0, b.C0), fpAdd(a.C1, b.C1)) }
 func fp2Sub(a, b *Fp2) *Fp2 { return newFp2(fpSub(a.C0, b.C0), fpSub(a.C1, b.C1)) }
@@ -134,14 +144,14 @@ func fp2Square(a *Fp2) *Fp2 {
 }
 
 // fp2Conjugate is the Frobenius on Fp2.
-func fp2Conjugate(a *Fp2) *Fp2 { return newFp2(new(big.Int).Set(a.C0), fpNeg(a.C1)) }
+func fp2Conjugate(a *Fp2) *Fp2 { return newFp2(a.C0, fpNeg(a.C1)) }
 
 func fp2Inv(a *Fp2) *Fp2 {
 	norm := fpAdd(fpMul(a.C0, a.C0), fpMul(a.C1, a.C1))
-	inv := fpInv(norm)
-	if inv == nil {
+	if fpIsZero(norm) {
 		return nil
 	}
+	inv := fpInv(norm)
 	return newFp2(fpMul(a.C0, inv), fpNeg(fpMul(a.C1, inv)))
 }
 
@@ -158,7 +168,10 @@ func fp2Exp(a *Fp2, e *big.Int) *Fp2 {
 }
 
 // xi is the non-residue the tower is built on: u + 1.
-var xi = newFp2(big.NewInt(1), big.NewInt(1))
+var xi = newFp2FromInt(1, 1)
+
+// curveB is the curve constant in Montgomery form.
+var curveB = feFromBig(curveBBig)
 
 // fp2MulXi multiplies by u + 1.
 func fp2MulXi(a *Fp2) *Fp2 {
@@ -167,19 +180,35 @@ func fp2MulXi(a *Fp2) *Fp2 {
 }
 
 // twistB is the curve constant of the sextic twist: 4(u + 1).
-var twistB = newFp2(big.NewInt(4), big.NewInt(4))
+var twistB = newFp2FromInt(4, 4)
 
 // sqrtExpFp is (p+1)/4, which gives square roots in the base field because
 // p ≡ 3 (mod 4).
 var sqrtExpFp = new(big.Int).Rsh(new(big.Int).Add(P, bigOne), 2)
 
 // fpSqrtBase returns a square root in Fp, or nil when none exists.
-func fpSqrtBase(a *big.Int) *big.Int {
-	candidate := new(big.Int).Exp(a, sqrtExpFp, P)
-	if fpMul(candidate, candidate).Cmp(new(big.Int).Mod(a, P)) != 0 {
-		return nil
+//
+// The exponentiation runs in Montgomery form, so the whole square root costs
+// field multiplications rather than conversions.
+func fpSqrtBase(a fe) (fe, bool) {
+	candidate := fpExp(a, sqrtExpFp)
+	if fpMul(candidate, candidate) != a {
+		return feZero, false
 	}
-	return candidate
+	return candidate, true
+}
+
+// fpExp raises a field element to a power.
+func fpExp(a fe, e *big.Int) fe {
+	result := feOne
+	base := a
+	for i := 0; i < e.BitLen(); i++ {
+		if e.Bit(i) == 1 {
+			result = fpMul(result, base)
+		}
+		base = fpMul(base, base)
+	}
+	return result
 }
 
 // fp2Sqrt returns a square root of a, or nil when none exists.
@@ -198,35 +227,36 @@ func fp2Sqrt(a *Fp2) *Fp2 {
 	// A purely real or purely imaginary element is a special case: with a1 = 0
 	// the general formula divides by zero.
 	if fpIsZero(a.C1) {
-		if root := fpSqrtBase(a.C0); root != nil {
-			return newFp2(root, new(big.Int))
+		if root, ok := fpSqrtBase(a.C0); ok {
+			return newFp2(root, feZero)
 		}
 		// a0 is not a square, but -a0 might be; then sqrt(a) = sqrt(-a0)*u,
 		// since u^2 = -1.
-		if root := fpSqrtBase(fpNeg(a.C0)); root != nil {
-			return newFp2(new(big.Int), root)
+		if root, ok := fpSqrtBase(fpNeg(a.C0)); ok {
+			return newFp2(feZero, root)
 		}
 		return nil
 	}
 
 	// norm = a0^2 + a1^2 must be a square in Fp for a to be a square in Fp2.
 	norm := fpAdd(fpMul(a.C0, a.C0), fpMul(a.C1, a.C1))
-	alpha := fpSqrtBase(norm)
-	if alpha == nil {
+	alpha, ok := fpSqrtBase(norm)
+	if !ok {
 		return nil
 	}
 
-	inv2 := fpInv(bigTwo)
+	two := feFromBig(bigTwo)
+	inv2 := fpInv(two)
 	// One of (a0 ± alpha)/2 is a square; try both.
-	for _, delta := range []*big.Int{
+	for _, delta := range []fe{
 		fpMul(fpAdd(a.C0, alpha), inv2),
 		fpMul(fpSub(a.C0, alpha), inv2),
 	} {
-		x0 := fpSqrtBase(delta)
-		if x0 == nil || fpIsZero(x0) {
+		x0, ok := fpSqrtBase(delta)
+		if !ok || fpIsZero(x0) {
 			continue
 		}
-		x1 := fpMul(a.C1, fpInv(fpMul(bigTwo, x0)))
+		x1 := fpMul(a.C1, fpInv(fpMul(two, x0)))
 		candidate := newFp2(x0, x1)
 		if fp2Square(candidate).Equal(a) {
 			return candidate

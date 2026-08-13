@@ -100,7 +100,7 @@ func TestGroupArithmetic(t *testing.T) {
 }
 
 func TestFieldTower(t *testing.T) {
-	a := newFp2(big.NewInt(7), big.NewInt(11))
+	a := newFp2FromInt(7, 11)
 	if !fp2Mul(a, fp2Inv(a)).Equal(fp2One()) {
 		t.Fatal("Fp2 inversion is wrong")
 	}
@@ -109,7 +109,7 @@ func TestFieldTower(t *testing.T) {
 	if !fp6Mul(fp6Mul(v, v), v).Equal(newFp6(xi, fp2Zero(), fp2Zero())) {
 		t.Fatal("v^3 does not reduce to u+1")
 	}
-	x := newFp6(a, newFp2(big.NewInt(3), big.NewInt(5)), newFp2(big.NewInt(2), big.NewInt(9)))
+	x := newFp6(a, newFp2FromInt(3, 5), newFp2FromInt(2, 9))
 	if !fp6Mul(x, fp6Inv(x)).Equal(fp6One()) {
 		t.Fatal("Fp6 inversion is wrong")
 	}
@@ -126,9 +126,9 @@ func TestFieldTower(t *testing.T) {
 
 func TestFp2SquareRoot(t *testing.T) {
 	for _, a := range []*Fp2{
-		newFp2(big.NewInt(4), new(big.Int)),
-		newFp2(big.NewInt(7), big.NewInt(11)),
-		newFp2(new(big.Int), big.NewInt(3)),
+		newFp2FromInt(4, 0),
+		newFp2FromInt(7, 11),
+		newFp2FromInt(0, 3),
 	} {
 		square := fp2Square(a)
 		root := fp2Sqrt(square)
