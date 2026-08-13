@@ -19,6 +19,10 @@ go.work.sum
 coverage.txt
 coverage.html
 
+# Compiled contract artifacts
+Counter.json
+*.combined.json
+
 # Chain data & runtime state
 /data/
 /chaindata/

@@ -14,6 +14,7 @@ $ ./layer1 init -datadir ./data
 $ ./layer1 run -datadir ./data -mine -validator <address>
 ```
 
+Or `make devnet` to do all three at once. `make help` lists every target;
 [QUICKSTART.md](QUICKSTART.md) walks through starting a chain, deploying a Solidity
 contract and joining as a validator, with output from an actual run.
 

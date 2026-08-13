@@ -2,6 +2,18 @@
 
 Every command below was run against this code. The output shown is real.
 
+There is a `Makefile` wrapping all of it, if you would rather not type the
+flags:
+
+```
+$ make devnet                                  # wipe, create and start a chain
+$ make deploy CONTRACT=Counter.sol ARGS=$(make -s word N=100)
+$ make call TO=<contract> DATA=$(make -s selector SIG='count()')
+$ make stop
+```
+
+`make help` lists the rest. The sections below are what those targets run.
+
 ## 1. Build
 
 ```
