@@ -92,9 +92,13 @@ Open proof of stake, following the shape Ethereum settled on.
 - An inactivity leak drains absent validators while the chain fails to
   finalize, so a network that has lost a third of its stake can recover.
 
-Still open here: Ethereum's correlation penalty, which scales a slashing with
-how many validators were slashed near the same time, is not implemented — a
-coordinated attack is currently punished no harder than an isolated fault.
+The correlation penalty is included: an offence is charged twice, once
+immediately and once after a delay, and the second charge scales with how much
+stake was slashed in the surrounding window. Measured, an isolated fault costs
+about 7% of a stake while a third of the network equivocating together costs
+essentially all of it. A flat penalty cannot express that range — it either
+lets coordination off cheaply or bankrupts an operator whose validator ran
+twice by accident.
 
 ## Phase 8 — Validator set scale  — DONE
 
@@ -113,10 +117,11 @@ and trivial to attack.
   into state. Proposers are drawn from it weighted by stake, so the schedule is
   unpredictable beyond the current epoch while staying verifiable.
 
-Still open here: the pairing implementation uses math/big rather than Montgomery
-arithmetic over fixed limbs, which leaves it roughly two orders of magnitude
-slower than a production library. That is a throughput ceiling, not a
-correctness one.
+The field arithmetic is Montgomery form over six fixed limbs: multiplication is
+149ns and signature verification 19ms, down from 1347ns and 399ms. A production
+library is still an order of magnitude faster, mostly through assembly and
+avoiding allocation in the extension tower — worth doing, but no longer the
+thing standing in the way.
 
 ## Phase 9 — What code cannot deliver  — NOT DONE
 

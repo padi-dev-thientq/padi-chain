@@ -346,6 +346,46 @@ func (r *Registry) TotalActiveStake(epoch uint64) (*big.Int, error) {
 	return total, nil
 }
 
+// Slashed stake per epoch.
+//
+// The correlation penalty needs to know how much stake was slashed near an
+// offence, so each epoch's total is recorded as it happens.
+
+func slotSlashedStake(epoch uint64) common.Hash {
+	return slotFor("staking/slashed-stake", epoch%SlashingWindow)
+}
+
+// SlashedStakeIn returns the effective balance slashed in an epoch.
+func (r *Registry) SlashedStakeIn(epoch uint64) *big.Int {
+	return r.state.GetState(StakingAddress, slotSlashedStake(epoch)).Big()
+}
+
+// AddSlashedStake records stake slashed in an epoch.
+func (r *Registry) AddSlashedStake(epoch uint64, amount *big.Int) {
+	total := new(big.Int).Add(r.SlashedStakeIn(epoch), amount)
+	r.state.SetState(StakingAddress, slotSlashedStake(epoch), common.BigToHash(total))
+}
+
+// ResetSlashedStake clears an epoch's tally, which happens as the ring buffer
+// wraps around so an old epoch's total is not mistaken for a recent one.
+func (r *Registry) ResetSlashedStake(epoch uint64) {
+	r.state.SetState(StakingAddress, slotSlashedStake(epoch), common.Hash{})
+}
+
+// CorrelatedSlashedStake sums the stake slashed across the window around an
+// epoch.
+func (r *Registry) CorrelatedSlashedStake(epoch uint64) *big.Int {
+	total := new(big.Int)
+	start := uint64(0)
+	if epoch > SlashingWindow {
+		start = epoch - SlashingWindow
+	}
+	for e := start; e <= epoch; e++ {
+		total.Add(total, r.SlashedStakeIn(e))
+	}
+	return total
+}
+
 // EpochState is the small amount of bookkeeping the transition needs to carry
 // between epochs.
 type EpochState struct {

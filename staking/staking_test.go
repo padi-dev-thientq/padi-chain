@@ -572,3 +572,144 @@ func TestManyValidators(t *testing.T) {
 		t.Fatalf("%d of %d validators activated", activated, count)
 	}
 }
+
+// slashAt slashes a validator and advances the registry to the epoch its
+// correlation penalty falls due.
+func slashAt(t *testing.T, m *Manager, sdb *state.StateDB, victims []common.Address, epoch uint64) {
+	t.Helper()
+	for _, v := range victims {
+		if _, _, err := m.Slash(v, epoch); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestCorrelationPenaltyScalesWithTheAttack(t *testing.T) {
+	// The same offence, committed alone and committed together, must cost
+	// wildly different amounts. That difference is what makes the penalty a
+	// deterrent against coordination rather than against running a validator.
+	measure := func(t *testing.T, validators, offenders int) *big.Int {
+		t.Helper()
+		sdb := newTestState(t)
+		m := NewManager(sdb)
+		for i := 1; i <= validators; i++ {
+			deposit(t, m, sdb, addr(byte(i)), MinDeposit, 0)
+		}
+		// Activate everyone.
+		for epoch := uint64(1); epoch <= uint64(validators/MinChurnLimit)+2; epoch++ {
+			m.ProcessEpoch(epoch, NewParticipation(), epoch)
+		}
+
+		const offenceEpoch = uint64(20)
+		var victims []common.Address
+		for i := 1; i <= offenders; i++ {
+			victims = append(victims, addr(byte(i)))
+		}
+		slashAt(t, m, sdb, victims, offenceEpoch)
+
+		before, err := m.Registry().ByAddress(addr(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		// Run to the epoch the correlation penalty falls due.
+		due := offenceEpoch + CorrelationPenaltyEpochOffset
+		for epoch := offenceEpoch + 1; epoch <= due; epoch++ {
+			if _, err := m.ProcessEpoch(epoch, NewParticipation(), epoch); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		after, err := m.Registry().ByAddress(addr(1))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return new(big.Int).Sub(before.Balance, after.Balance)
+	}
+
+	// The set has to be large enough that one validator is a small share of
+	// it. In a set of twelve, a single validator is already eight percent of
+	// the stake, and the formula correctly treats that as substantial.
+	isolated := measure(t, 40, 1)
+	coordinated := measure(t, 40, 14)
+
+	if isolated.Sign() == 0 {
+		t.Fatal("an isolated offence was not penalised at all")
+	}
+	if coordinated.Cmp(isolated) <= 0 {
+		t.Fatalf("a coordinated attack cost %s, an isolated fault %s: coordination must cost more",
+			coordinated, isolated)
+	}
+	// A third of the network equivocating together should cost several times
+	// what one validator alone does.
+	threshold := new(big.Int).Mul(isolated, big.NewInt(5))
+	if coordinated.Cmp(threshold) < 0 {
+		t.Fatalf("coordinated %s is not meaningfully worse than isolated %s", coordinated, isolated)
+	}
+	t.Logf("isolated fault: %s wei; coordinated attack: %s wei", isolated, coordinated)
+}
+
+func TestCorrelationPenaltyIsChargedOnce(t *testing.T) {
+	sdb := newTestState(t)
+	m := NewManager(sdb)
+	for i := 1; i <= 6; i++ {
+		deposit(t, m, sdb, addr(byte(i)), MinDeposit, 0)
+	}
+	for epoch := uint64(1); epoch <= 3; epoch++ {
+		m.ProcessEpoch(epoch, NewParticipation(), epoch)
+	}
+
+	const offenceEpoch = uint64(10)
+	slashAt(t, m, sdb, []common.Address{addr(1)}, offenceEpoch)
+
+	due := offenceEpoch + CorrelationPenaltyEpochOffset
+	var charged int
+	var balanceAfterCharge *big.Int
+	for epoch := offenceEpoch + 1; epoch <= due+3; epoch++ {
+		report, err := m.ProcessEpoch(epoch, NewParticipation(), epoch)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Correlated) > 0 {
+			charged++
+			v, _ := m.Registry().ByAddress(addr(1))
+			balanceAfterCharge = new(big.Int).Set(v.Balance)
+		}
+	}
+	if charged != 1 {
+		t.Fatalf("the correlation penalty was charged %d times, want once", charged)
+	}
+	// And the balance stops moving afterwards.
+	v, _ := m.Registry().ByAddress(addr(1))
+	if v.Balance.Cmp(balanceAfterCharge) != 0 {
+		t.Fatal("a slashed validator kept losing stake after its penalty was charged")
+	}
+}
+
+func TestCorrelationPenaltyKeepsTheInvariant(t *testing.T) {
+	sdb := newTestState(t)
+	m := NewManager(sdb)
+	for i := 1; i <= 8; i++ {
+		deposit(t, m, sdb, addr(byte(i)), MinDeposit, 0)
+	}
+	for epoch := uint64(1); epoch <= 3; epoch++ {
+		m.ProcessEpoch(epoch, NewParticipation(), epoch)
+	}
+	slashAt(t, m, sdb, []common.Address{addr(1), addr(2), addr(3)}, 10)
+
+	for epoch := uint64(11); epoch <= 10+CorrelationPenaltyEpochOffset+1; epoch++ {
+		if _, err := m.ProcessEpoch(epoch, NewParticipation(), epoch); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// The staking account must still hold exactly what validators own, after
+	// burning both the immediate and the correlated penalties.
+	total, err := m.TotalStaked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := sdb.GetBalance(StakingAddress); got.Cmp(total) != 0 {
+		t.Fatalf("the staking account holds %s but validators own %s", got, total)
+	}
+}

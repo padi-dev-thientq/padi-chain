@@ -119,6 +119,11 @@ reason it agrees on balances. The set for an epoch is read from the state at the
 the previous one, which is what makes it usable for verification: a node checking a block
 already holds the state that decided who was allowed to produce it.
 
+**Slashing has to distinguish a fault from an attack.** An offence is charged twice: a
+flat penalty at once, and a second one later that scales with how much stake was slashed
+around the same time. An isolated fault costs about 7% of a stake; a third of the network
+equivocating together costs all of it. One number cannot span that range.
+
 **A quorum should cost two pairings, not two hundred.** Attestations aggregate, so a
 certificate for 256 validators is 167 bytes and verifies in one check. Verifying each
 vote as it arrives would have thrown that away, which is a mistake this codebase made
@@ -140,7 +145,7 @@ safe to run while blocks are still arriving.
 ## Testing
 
 ```
-$ go test ./...           # 490 tests
+$ go test ./...           # 505 tests
 $ go test -race ./...
 ```
 
@@ -194,12 +199,10 @@ layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff -da
 [ROADMAP.md](ROADMAP.md) tracks the path to production. Eight of its nine phases are
 done. What remains, stated plainly:
 
-- **The pairing arithmetic is slow.** It is built on `math/big` rather than Montgomery
-  arithmetic over fixed limbs, which leaves signature verification around two orders of
-  magnitude slower than a production library. That caps throughput, not correctness.
-- **Ethereum's correlation penalty is not implemented.** A coordinated attack is
-  currently slashed no harder than an isolated fault, so the cost of attacking with many
-  validators at once is lower than it should be.
+- **The pairing is still around ten times slower than a production library.** Signature
+  verification is 19ms against roughly 1-2ms for an assembly implementation. That caps
+  throughput, not correctness, and the remaining gap is allocation in the extension tower
+  rather than anything structural.
 - **It has not been audited, and it has not been run in public.** Everything here is
   tested against its own author's model of what could go wrong, which is precisely the
   blind spot an independent audit and a long-running testnet exist to cover. Do not put

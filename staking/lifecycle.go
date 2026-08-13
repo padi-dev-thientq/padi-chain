@@ -202,10 +202,75 @@ func (m *Manager) Slash(validator common.Address, epoch uint64) (*Validator, *bi
 	v.WithdrawableEpoch = epoch + WithdrawalDelay
 	m.registry.Put(v)
 
+	// Record the offence against the epoch, so the correlation penalty applied
+	// later can see how much stake misbehaved around the same time.
+	m.registry.AddSlashedStake(epoch, v.EffectiveBalance)
+
 	// The slashed stake is destroyed rather than redistributed. Paying it to
 	// the reporter would create an incentive to provoke slashable behaviour.
 	m.state.SubBalance(StakingAddress, penalty)
 	return v, penalty, nil
+}
+
+// applyCorrelationPenalties charges the second, larger slashing penalty to
+// validators whose offence falls due this epoch.
+//
+// The size depends on how much stake was slashed in the surrounding window: an
+// isolated fault costs a fraction of a percent, while a third of the network
+// equivocating together costs nearly everything. That difference is the point.
+// A flat penalty either lets a coordinated attack off cheaply or bankrupts an
+// operator whose validator ran twice by accident.
+func (m *Manager) applyCorrelationPenalties(epoch uint64, report *EpochReport) error {
+	all, err := m.registry.All()
+	if err != nil {
+		return err
+	}
+
+	totalStake, err := m.registry.TotalActiveStake(epoch)
+	if err != nil {
+		return err
+	}
+	if totalStake.Sign() == 0 {
+		return nil
+	}
+	correlated := m.registry.CorrelatedSlashedStake(epoch)
+	// Cap the correlated amount at the whole stake, so the multiplier cannot
+	// push the penalty above the balance it applies to.
+	if correlated.Cmp(totalStake) > 0 {
+		correlated = new(big.Int).Set(totalStake)
+	}
+
+	for _, v := range all {
+		if v.Status != StatusSlashed || v.Balance.Sign() == 0 {
+			continue
+		}
+		if v.SlashedEpoch+CorrelationPenaltyEpochOffset != epoch {
+			continue
+		}
+
+		// penalty = effective_balance * min(correlated * multiplier, total) / total
+		scaled := new(big.Int).Mul(correlated, big.NewInt(CorrelationPenaltyMultiplier))
+		if scaled.Cmp(totalStake) > 0 {
+			scaled = new(big.Int).Set(totalStake)
+		}
+		penalty := new(big.Int).Mul(v.EffectiveBalance, scaled)
+		penalty.Div(penalty, totalStake)
+		if penalty.Cmp(v.Balance) > 0 {
+			penalty = new(big.Int).Set(v.Balance)
+		}
+		if penalty.Sign() == 0 {
+			continue
+		}
+
+		v.Balance = new(big.Int).Sub(v.Balance, penalty)
+		v.EffectiveBalance = computeEffectiveBalance(v.Balance)
+		m.registry.Put(v)
+
+		m.state.SubBalance(StakingAddress, penalty)
+		report.Burned.Add(report.Burned, penalty)
+		report.Correlated = append(report.Correlated, v.Address)
+	}
+	return nil
 }
 
 // Withdraw returns an exited validator's stake to its withdrawal address.
@@ -260,12 +325,14 @@ func (p *Participation) MarkProposed(addr common.Address) { p.Proposers[addr]++ 
 
 // EpochReport summarises what an epoch transition did.
 type EpochReport struct {
-	Epoch      uint64
-	Activated  []common.Address
-	Exited     []common.Address
-	Ejected    []common.Address
-	Rewarded   int
-	Penalised  int
+	Epoch     uint64
+	Activated []common.Address
+	Exited    []common.Address
+	Ejected   []common.Address
+	Rewarded  int
+	Penalised int
+	// Correlated lists validators charged the correlation penalty this epoch.
+	Correlated []common.Address
 	Issued     *big.Int
 	Burned     *big.Int
 	LeakActive bool
@@ -368,7 +435,16 @@ func (m *Manager) ProcessEpoch(epoch uint64, participation *Participation, final
 		m.state.SubBalance(StakingAddress, report.Burned)
 	}
 
-	// 3. Eject validators that have fallen below the minimum worth trusting.
+	// 3. Charge correlation penalties that have come due.
+	if err := m.applyCorrelationPenalties(epoch, report); err != nil {
+		return nil, err
+	}
+
+	// Clear the slot this epoch's tally will reuse once the window wraps, so
+	// an old total is never mistaken for a recent one.
+	m.registry.ResetSlashedStake(epoch + 1)
+
+	// 4. Eject validators that have fallen below the minimum worth trusting.
 	for _, v := range active {
 		current, err := m.registry.Get(v.Index)
 		if err != nil {
@@ -381,7 +457,7 @@ func (m *Manager) ProcessEpoch(epoch uint64, participation *Participation, final
 		}
 	}
 
-	// 4. Activate pending deposits, oldest first, up to the churn limit.
+	// 5. Activate pending deposits, oldest first, up to the churn limit.
 	activeAfter, err := m.registry.ActiveAt(epoch)
 	if err != nil {
 		return nil, err

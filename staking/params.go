@@ -79,9 +79,31 @@ const (
 	// validator set is not throttled by a limit sized for a small one.
 	ChurnLimitQuotient = 65536
 
-	// SlashPenaltyQuotient is the fraction of effective balance burned for an
-	// initial slashing offence: one thirty-second, as on Ethereum.
+	// SlashPenaltyQuotient is the fraction of effective balance burned the
+	// moment an offence is proved: one thirty-second, as on Ethereum.
 	SlashPenaltyQuotient = 32
+
+	// CorrelationPenaltyMultiplier scales the second, larger penalty by how
+	// much stake was slashed around the same time.
+	//
+	// An isolated fault — a misconfigured validator running twice — should
+	// cost little. A third of the network equivocating at once is an attack on
+	// finality, and should cost everything. Multiplying the penalty by the
+	// correlated stake makes the two ends of that range differ by orders of
+	// magnitude, which a flat penalty cannot express.
+	CorrelationPenaltyMultiplier = 3
+
+	// SlashingWindow is how many epochs count as "around the same time" when
+	// measuring correlation. It has to be long enough that an attacker cannot
+	// evade it by spreading the offences out, which is why Ethereum sets it to
+	// roughly the withdrawal delay.
+	SlashingWindow = WithdrawalDelay
+
+	// CorrelationPenaltyEpochOffset is how long after an offence the
+	// correlation penalty is applied. Waiting lets the network observe how
+	// much other stake was slashed in the same window before deciding the
+	// size of the penalty.
+	CorrelationPenaltyEpochOffset = SlashingWindow / 2
 
 	// ProposerRewardQuotient is the proposer's share of the rewards it
 	// includes, paid for including other validators' attestations.
