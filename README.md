@@ -14,6 +14,9 @@ $ ./layer1 init -datadir ./data
 $ ./layer1 run -datadir ./data -mine -validator <address>
 ```
 
+[QUICKSTART.md](QUICKSTART.md) walks through starting a chain, deploying a Solidity
+contract and joining as a validator, with output from an actual run.
+
 ## What it does
 
 - Executes EVM bytecode with the London gas schedule, so contracts compiled by Solidity
