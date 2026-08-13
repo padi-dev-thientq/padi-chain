@@ -96,7 +96,29 @@ Still open here: Ethereum's correlation penalty, which scales a slashing with
 how many validators were slashed near the same time, is not implemented — a
 coordinated attack is currently punished no harder than an isolated fault.
 
-## Phase 8 — What code cannot deliver  — NOT DONE
+## Phase 8 — Validator set scale  — DONE
+
+*The gap:* attestations were one secp256k1 signature per validator, so a quorum
+certificate grew with the set and cost as much to verify as to build. And
+proposal was round-robin, so the next proposer was known indefinitely far ahead
+and trivial to attack.
+
+- BLS12-381 with signature aggregation: a certificate is one signature plus a
+  bitfield, and verifying it is two pairings whatever the number of signers.
+  Measured, a certificate for 256 validators is 167 bytes against 16KB for the
+  equivalent in recoverable signatures.
+- Proofs of possession at registration, without which a validator could forge
+  aggregates from a key derived from everyone else's.
+- RANDAO: each block carries the proposer's signature over the epoch, mixed
+  into state. Proposers are drawn from it weighted by stake, so the schedule is
+  unpredictable beyond the current epoch while staying verifiable.
+
+Still open here: the pairing implementation uses math/big rather than Montgomery
+arithmetic over fixed limbs, which leaves it roughly two orders of magnitude
+slower than a production library. That is a throughput ceiling, not a
+correctness one.
+
+## Phase 9 — What code cannot deliver  — NOT DONE
 
 No amount of implementation substitutes for these.
 

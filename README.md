@@ -27,6 +27,9 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
 - Runs open proof of stake: validators join by depositing, the set changes only at epoch
   boundaries and only at a bounded rate, equivocation is slashed, and an inactivity leak
   lets a network that lost a third of its stake finalize again.
+- Aggregates attestations with BLS12-381, so a quorum certificate is one signature and a
+  bitfield rather than one signature per validator, and picks proposers by stake from
+  randomness the proposers themselves cannot grind.
 - Prices gas with an EIP-1559 fee market: the base fee is burned, the priority fee pays
   the proposer.
 - Connects peers over authenticated, encrypted links with forward secrecy, scores their
@@ -45,6 +48,7 @@ $ ./layer1 run -datadir ./data -mine -validator <address>
 | `crypto/ripemd160` | The RIPEMD-160 hash |
 | `crypto/blake2b` | The BLAKE2b compression function |
 | `crypto/bn254` | The alt_bn128 tower field, both groups, and the optimal ate pairing |
+| `crypto/bls12381` | BLS12-381 and aggregate signatures, for attestations |
 | `common` | Addresses and hashes, EIP-55 checksums, hex quantities |
 | `uint256` | Four-limb 256-bit integers with the EVM's exact arithmetic semantics |
 | `rlp` | Recursive Length Prefix codec with struct tags and canonicality checks |
@@ -115,6 +119,16 @@ reason it agrees on balances. The set for an epoch is read from the state at the
 the previous one, which is what makes it usable for verification: a node checking a block
 already holds the state that decided who was allowed to produce it.
 
+**A quorum should cost two pairings, not two hundred.** Attestations aggregate, so a
+certificate for 256 validators is 167 bytes and verifies in one check. Verifying each
+vote as it arrives would have thrown that away, which is a mistake this codebase made
+once and its own benchmarks caught.
+
+**Randomness a proposer cannot grind.** The RANDAO reveal is a BLS signature over the
+epoch, and a BLS signature is unique per key and message — there is exactly one value a
+proposer can contribute. What is left is the choice to publish or withhold, which is one
+bit per slot and the same residual bias Ethereum lives with.
+
 **Slashed stake is burned, not paid out.** Rewarding whoever reports an offence would
 create an incentive to provoke one.
 
@@ -126,7 +140,7 @@ safe to run while blocks are still arriving.
 ## Testing
 
 ```
-$ go test ./...           # 448 tests
+$ go test ./...           # 490 tests
 $ go test -race ./...
 ```
 
@@ -177,9 +191,12 @@ layer1 send -from <validator> -to 0x00000000000000000000000000000000000000ff -da
 
 ## Scope
 
-[ROADMAP.md](ROADMAP.md) tracks the path to production. Seven of its eight phases are
+[ROADMAP.md](ROADMAP.md) tracks the path to production. Eight of its nine phases are
 done. What remains, stated plainly:
 
+- **The pairing arithmetic is slow.** It is built on `math/big` rather than Montgomery
+  arithmetic over fixed limbs, which leaves signature verification around two orders of
+  magnitude slower than a production library. That caps throughput, not correctness.
 - **Ethereum's correlation penalty is not implemented.** A coordinated attack is
   currently slashed no harder than an isolated fault, so the cost of attacking with many
   validators at once is lower than it should be.
