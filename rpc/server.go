@@ -35,8 +35,32 @@ type Request struct {
 type Response struct {
 	Version string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
-	Result  any             `json:"result,omitempty"`
+	Result  any             `json:"result"`
 	Error   *Error          `json:"error,omitempty"`
+}
+
+// MarshalJSON emits exactly one of result and error, and emits result even when
+// it is null.
+//
+// The specification requires one member or the other, never both and never
+// neither. Letting "omitempty" drop a null result produces a reply with only an
+// id — which is what a client gets when it asks for the receipt of a
+// transaction that has not been mined yet, and which standard clients reject as
+// malformed rather than reading as "not found".
+func (r Response) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, 3)
+	out["jsonrpc"] = "2.0"
+	if len(r.ID) > 0 {
+		out["id"] = r.ID
+	} else {
+		out["id"] = nil
+	}
+	if r.Error != nil {
+		out["error"] = r.Error
+	} else {
+		out["result"] = r.Result
+	}
+	return json.Marshal(out)
 }
 
 // Error is a JSON-RPC error object.

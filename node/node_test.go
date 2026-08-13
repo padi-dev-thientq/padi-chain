@@ -707,3 +707,150 @@ func TestReadinessReportsAStalledChain(t *testing.T) {
 		t.Fatalf("a node whose head is a day old reported ready (status %d)", resp.StatusCode)
 	}
 }
+
+// TestBlockShapeMatchesEthereum guards the fields standard clients require.
+//
+// ethers.js parses a block against Ethereum's shape and rejects the whole
+// object when a field is missing — including fields that can only ever hold a
+// constant on a chain with no proof of work and no uncles. Dropping one of
+// these does not degrade gracefully; it makes the node unusable from a library.
+func TestBlockShapeMatchesEthereum(t *testing.T) {
+	key, addr := devKey(t, 1)
+	n := startNode(t, &node.Config{
+		DataDir:   t.TempDir(),
+		Genesis:   newGenesis(addr),
+		Validator: key,
+		Mine:      true,
+		RPCAddr:   "127.0.0.1:0",
+		Logger:    quietLogger(),
+	})
+	waitFor(t, 15*time.Second, "a block to be produced", func() bool {
+		return n.Chain().CurrentBlock().NumberU64() >= 1
+	})
+
+	c := &client{url: "http://" + n.RPCAddr()}
+	var block map[string]any
+	if err := json.Unmarshal(c.call(t, "eth_getBlockByNumber", "latest", false), &block); err != nil {
+		t.Fatal(err)
+	}
+
+	required := []string{
+		"number", "hash", "parentHash", "nonce", "sha3Uncles", "logsBloom",
+		"transactionsRoot", "stateRoot", "receiptsRoot", "miner", "difficulty",
+		"totalDifficulty", "extraData", "size", "gasLimit", "gasUsed",
+		"timestamp", "transactions", "uncles", "mixHash", "baseFeePerGas",
+	}
+	for _, field := range required {
+		if _, ok := block[field]; !ok {
+			t.Errorf("block is missing %q, which standard clients require", field)
+		}
+	}
+	if block["sha3Uncles"] != "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347" {
+		t.Errorf("sha3Uncles = %v, want the empty-list hash", block["sha3Uncles"])
+	}
+}
+
+// TestTransactionShapeMatchesEthereum guards the same for transactions.
+func TestTransactionShapeMatchesEthereum(t *testing.T) {
+	validatorKey, validator := devKey(t, 1)
+	senderKey, sender := devKey(t, 2)
+
+	n := startNode(t, &node.Config{
+		DataDir:   t.TempDir(),
+		Genesis:   newGenesis(validator, sender),
+		Validator: validatorKey,
+		Mine:      true,
+		RPCAddr:   "127.0.0.1:0",
+		Logger:    quietLogger(),
+	})
+	c := &client{url: "http://" + n.RPCAddr()}
+
+	recipient := common.MustHexToAddress("0x5555555555555555555555555555555555555555")
+	tx, err := core.NewSigner(testChainID).SignTx(core.NewTx(&core.DynamicFeeTx{
+		Nonce:     0,
+		GasTipCap: big.NewInt(1_000_000_000),
+		GasFeeCap: big.NewInt(20_000_000_000),
+		Gas:       21000,
+		To:        &recipient,
+		Value:     big.NewInt(1),
+	}), senderKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := tx.MarshalBinary()
+	c.callString(t, "eth_sendRawTransaction", common.EncodeHex(raw))
+
+	waitFor(t, 20*time.Second, "the transaction to be mined", func() bool {
+		found, _ := n.Chain().GetTransaction(tx.Hash())
+		return found != nil
+	})
+
+	var got map[string]any
+	if err := json.Unmarshal(c.call(t, "eth_getTransactionByHash", tx.Hash().Hex()), &got); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"blockHash", "blockNumber", "from", "gas", "gasPrice", "hash", "input",
+		"nonce", "to", "transactionIndex", "value", "type", "chainId",
+		"v", "r", "s", "yParity", "accessList",
+		"maxFeePerGas", "maxPriorityFeePerGas",
+	} {
+		if _, ok := got[field]; !ok {
+			t.Errorf("transaction is missing %q", field)
+		}
+	}
+
+	var receipt map[string]any
+	if err := json.Unmarshal(c.call(t, "eth_getTransactionReceipt", tx.Hash().Hex()), &receipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{
+		"transactionHash", "transactionIndex", "blockHash", "blockNumber",
+		"from", "to", "cumulativeGasUsed", "gasUsed", "contractAddress",
+		"logs", "logsBloom", "status", "effectiveGasPrice", "type",
+	} {
+		if _, ok := receipt[field]; !ok {
+			t.Errorf("receipt is missing %q", field)
+		}
+	}
+}
+
+// TestFeeHistoryShape checks what a client needs to choose a priority fee.
+func TestFeeHistoryShape(t *testing.T) {
+	key, addr := devKey(t, 1)
+	n := startNode(t, &node.Config{
+		DataDir:   t.TempDir(),
+		Genesis:   newGenesis(addr),
+		Validator: key,
+		Mine:      true,
+		RPCAddr:   "127.0.0.1:0",
+		Logger:    quietLogger(),
+	})
+	waitFor(t, 15*time.Second, "blocks to accumulate", func() bool {
+		return n.Chain().CurrentBlock().NumberU64() >= 3
+	})
+
+	c := &client{url: "http://" + n.RPCAddr()}
+	var history map[string]any
+	if err := json.Unmarshal(c.call(t, "eth_feeHistory", "0x3", "latest", []float64{25, 75}), &history); err != nil {
+		t.Fatal(err)
+	}
+
+	baseFees, ok := history["baseFeePerGas"].([]any)
+	if !ok {
+		t.Fatalf("baseFeePerGas = %v", history["baseFeePerGas"])
+	}
+	ratios, ok := history["gasUsedRatio"].([]any)
+	if !ok {
+		t.Fatalf("gasUsedRatio = %v", history["gasUsedRatio"])
+	}
+	// One more base fee than blocks: the extra entry is the next block's,
+	// which a client needs in order to know what its transaction will pay.
+	if len(baseFees) != len(ratios)+1 {
+		t.Fatalf("%d base fees for %d blocks, want one more", len(baseFees), len(ratios))
+	}
+	rewards, ok := history["reward"].([]any)
+	if !ok || len(rewards) != len(ratios) {
+		t.Fatalf("reward rows = %v, want one per block", history["reward"])
+	}
+}

@@ -148,7 +148,42 @@ eth_call reset() from a stranger
 Selectors are `keccak256(signature)[:4]`; the node will compute them for you
 with `web3_sha3` if you have no other tooling to hand.
 
-## 6. Add a second node
+## 6. Use it from a library
+
+The RPC is the standard Ethereum one, so existing tooling works unmodified:
+
+```python
+from web3 import Web3
+from eth_account import Account
+
+w3 = Web3(Web3.HTTPProvider("http://127.0.0.1:8545"))
+acct = Account.from_key("0x...")
+
+Counter = w3.eth.contract(abi=abi, bytecode=bytecode)
+tx = Counter.constructor(100).build_transaction({
+    "from": acct.address,
+    "nonce": w3.eth.get_transaction_count(acct.address),
+    "gas": 500000,
+    "maxFeePerGas": w3.to_wei(20, "gwei"),
+    "maxPriorityFeePerGas": w3.to_wei(1, "gwei"),
+    "chainId": w3.eth.chain_id,
+})
+receipt = w3.eth.wait_for_transaction_receipt(
+    w3.eth.send_raw_transaction(acct.sign_transaction(tx).raw_transaction))
+
+counter = w3.eth.contract(address=receipt["contractAddress"], abi=abi)
+counter.functions.count().call()          # 100
+```
+
+Events are watched by polling a filter; there is no WebSocket transport, so
+`eth_subscribe` is unavailable.
+
+```python
+flt = counter.events.Incremented.create_filter(from_block="latest")
+flt.get_new_entries()   # [AttributeDict({'by': '0x...', 'newCount': 141})]
+```
+
+## 7. Add a second node
 
 ```
 $ ./padi-chain init -datadir ./data2 ...        # or copy data/genesis.json across
@@ -160,7 +195,7 @@ $ ./padi-chain run -datadir ./data2 -addr 0.0.0.0:30304 -rpc 127.0.0.1:8546 \
 The second node authenticates, syncs, and follows. A node that is far behind
 takes a finalized snapshot from its peer instead of replaying the chain.
 
-## 7. Become a validator
+## 8. Become a validator
 
 Staking is a transaction to the system account at
 `0x00000000000000000000000000000000000000ff`, carrying the stake as value and

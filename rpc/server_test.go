@@ -361,3 +361,95 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestResponseAlwaysCarriesResultOrError(t *testing.T) {
+	s := newTestServer(t)
+	s.Register("test_nil", func(params []json.RawMessage) (any, error) { return nil, nil })
+
+	// A handler returning nothing must still produce "result": null. Omitting
+	// it leaves a reply with only an id, which standard clients reject as
+	// malformed rather than reading as "not found" — the shape returned when
+	// asking for the receipt of a transaction that is not mined yet.
+	_, body := post(t, s, `{"jsonrpc":"2.0","id":5,"method":"test_nil"}`)
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["result"]; !ok {
+		t.Fatalf("a null result was omitted entirely: %s", body)
+	}
+	if _, ok := raw["error"]; ok {
+		t.Fatalf("a success carried an error member: %s", body)
+	}
+
+	// An error must not carry a result member alongside it. A fresh map is
+	// needed here: unmarshalling into a populated one merges into it.
+	_, body = post(t, s, `{"jsonrpc":"2.0","id":6,"method":"test_fail"}`)
+	raw = make(map[string]any)
+	json.Unmarshal([]byte(body), &raw)
+	if _, ok := raw["error"]; !ok {
+		t.Fatalf("a failure carried no error: %s", body)
+	}
+	if _, ok := raw["result"]; ok {
+		t.Fatalf("a failure carried a result member too: %s", body)
+	}
+}
+
+func TestFilterLifecycle(t *testing.T) {
+	set := newFilterSet()
+	now := time.Now()
+	set.now = func() time.Time { return now }
+
+	id := set.add(&filter{kind: filterBlocks, cursor: 1})
+	if _, ok := set.get(id); !ok {
+		t.Fatal("a freshly installed filter is missing")
+	}
+	if set.count() != 1 {
+		t.Fatalf("count = %d, want 1", set.count())
+	}
+	if !set.remove(id) {
+		t.Fatal("uninstall reported nothing removed")
+	}
+	if _, ok := set.get(id); ok {
+		t.Fatal("an uninstalled filter is still there")
+	}
+	if set.remove(id) {
+		t.Fatal("uninstalling twice reported a second removal")
+	}
+}
+
+func TestFiltersExpire(t *testing.T) {
+	set := newFilterSet()
+	now := time.Now()
+	set.now = func() time.Time { return now }
+
+	stale := set.add(&filter{kind: filterBlocks})
+
+	// A client that stops polling must not leak a filter forever.
+	now = now.Add(2 * set.ttl)
+	set.add(&filter{kind: filterBlocks}) // installing sweeps
+	if _, ok := set.get(stale); ok {
+		t.Fatal("an abandoned filter survived past its lifetime")
+	}
+
+	// Polling keeps a filter alive.
+	fresh := set.add(&filter{kind: filterBlocks})
+	for i := 0; i < 5; i++ {
+		now = now.Add(set.ttl / 2)
+		if _, ok := set.get(fresh); !ok {
+			t.Fatal("a filter being polled was expired")
+		}
+	}
+}
+
+func TestFilterIdentifiersAreDistinct(t *testing.T) {
+	set := newFilterSet()
+	seen := map[string]struct{}{}
+	for i := 0; i < 50; i++ {
+		id := set.add(&filter{kind: filterBlocks})
+		if _, repeated := seen[id]; repeated {
+			t.Fatalf("filter id %s was issued twice", id)
+		}
+		seen[id] = struct{}{}
+	}
+}

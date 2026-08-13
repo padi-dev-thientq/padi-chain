@@ -207,6 +207,51 @@ padi-chain status
 padi-chain prune     [-monitor host:port]
 ```
 
+## JSON-RPC
+
+The standard Ethereum methods under their standard names, so existing tooling
+works unmodified. Verified against **ethers.js v6**, **web3.js v4** and
+**web3.py**: deploying a contract, reading it, sending signed transactions,
+decoding events, watching them through polling filters, and decoding a custom
+error out of revert data all work with no adaptation.
+
+The `eth_` prefix is kept deliberately. It is not a claim to be Ethereum — it is
+the name every client has compiled into it, and renaming it would mean none of
+them could talk to this chain.
+
+```
+eth_    chainId blockNumber syncing accounts coinbase protocolVersion mining hashrate
+        getBalance getTransactionCount getCode getStorageAt
+        getBlockByNumber getBlockByHash getBlockTransactionCountByNumber
+        getBlockTransactionCountByHash getUncleCountByBlockNumber getUncleCountByBlockHash
+        getTransactionByHash getTransactionByBlockNumberAndIndex
+        getTransactionByBlockHashAndIndex getTransactionReceipt
+        sendRawTransaction call estimateGas gasPrice maxPriorityFeePerGas feeHistory
+        getLogs newFilter newBlockFilter newPendingTransactionFilter
+        getFilterChanges getFilterLogs uninstallFilter
+net_    version listening peerCount
+web3_   clientVersion sha3
+txpool_ status
+padi_   nodeInfo validators validatorInfo
+```
+
+The chain's own methods live under `padi_`, spelled without the hyphen because a
+JSON-RPC namespace containing one breaks enough tooling not to be worth it — the
+same reason the metrics use `padi_`.
+
+Blocks, transactions and receipts carry every field Ethereum defines, including
+ones that can only hold a constant here: no proof of work means `difficulty` is
+always zero, and there are no uncles. Clients parse these objects against a
+fixed shape and reject the whole thing when a field is absent, so a missing
+constant is not a small omission — it makes the node unusable from a library.
+`mixHash` carries the block's randomness, which is where post-merge Ethereum
+puts it and where tooling looks for it.
+
+Not implemented: WebSocket transport, so `eth_subscribe` is unavailable and
+events must be watched by polling a filter. There is no `eth_sendTransaction`
+either — the node holds keys but will not sign with them over RPC, so signing
+stays with the client.
+
 ## Staking
 
 A validator joins by sending its stake to the system account at
@@ -235,6 +280,8 @@ and validator-set scale.
 
 What remains, stated plainly:
 
+- **There is no WebSocket transport.** Events are watched by polling a filter
+  rather than subscribing, which is more work for a client and higher latency.
 - **The pairing is around ten times slower than a production library.**
   Verification is 19ms against roughly 1-2ms for an assembly implementation.
   That caps throughput, not correctness, and the remaining gap is allocation in

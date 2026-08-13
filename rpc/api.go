@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"sort"
 
 	"padi-chain/chain"
 	"padi-chain/common"
@@ -31,11 +32,12 @@ type Backend interface {
 // API implements the eth, net and web3 namespaces.
 type API struct {
 	backend Backend
+	filters *filterSet
 }
 
 // RegisterAll wires every supported method into a server.
 func RegisterAll(s *Server, backend Backend) {
-	api := &API{backend: backend}
+	api := &API{backend: backend, filters: newFilterSet()}
 
 	s.Register("web3_clientVersion", api.clientVersion)
 	s.Register("web3_sha3", api.sha3)
@@ -61,6 +63,28 @@ func RegisterAll(s *Server, backend Backend) {
 	s.Register("eth_gasPrice", api.gasPrice)
 	s.Register("eth_maxPriorityFeePerGas", api.maxPriorityFeePerGas)
 	s.Register("eth_getLogs", api.getLogs)
+	s.Register("eth_feeHistory", api.feeHistory)
+
+	// Polling filters. Tooling that watches events over plain HTTP installs a
+	// filter and asks what has changed, rather than re-scanning ranges.
+	s.Register("eth_newFilter", api.newFilter)
+	s.Register("eth_newBlockFilter", api.newBlockFilter)
+	s.Register("eth_newPendingTransactionFilter", api.newPendingTransactionFilter)
+	s.Register("eth_getFilterChanges", api.getFilterChanges)
+	s.Register("eth_getFilterLogs", api.getFilterLogs)
+	s.Register("eth_uninstallFilter", api.uninstallFilter)
+
+	// Methods with no meaning on this chain, answered rather than refused:
+	// tooling probes them and treats an error as a broken node.
+	s.Register("eth_protocolVersion", api.protocolVersion)
+	s.Register("eth_mining", api.mining)
+	s.Register("eth_hashrate", api.hashrate)
+	s.Register("eth_coinbase", api.coinbase)
+	s.Register("eth_getUncleCountByBlockNumber", api.uncleCount)
+	s.Register("eth_getUncleCountByBlockHash", api.uncleCount)
+	s.Register("eth_getBlockTransactionCountByHash", api.getBlockTxCountByHash)
+	s.Register("eth_getTransactionByBlockNumberAndIndex", api.getTransactionByBlockNumberAndIndex)
+	s.Register("eth_getTransactionByBlockHashAndIndex", api.getTransactionByBlockHashAndIndex)
 	s.Register("eth_accounts", api.accounts)
 	s.Register("eth_syncing", api.syncing)
 
@@ -309,6 +333,171 @@ func (a *API) getBlockByHash(params []json.RawMessage) (any, error) {
 	}
 	full, _ := decodeParam[bool](params, 1)
 	return a.marshalBlock(block, full), nil
+}
+
+// feeHistory reports recent base fees and how full the blocks were, which is
+// what a client uses to choose a priority fee.
+//
+// The next block's base fee is included as an extra entry, because it is
+// already determined by the head — a client that did not know it would have to
+// guess how much the fee could move before its transaction lands.
+func (a *API) feeHistory(params []json.RawMessage) (any, error) {
+	countRaw, err := decodeParam[string](params, 0)
+	if err != nil {
+		return nil, err
+	}
+	count, err := common.DecodeHexUint(countRaw)
+	if err != nil {
+		return nil, NewError(CodeInvalidParams, "block count: %v", err)
+	}
+	const maxHistory = 1024
+	if count > maxHistory {
+		count = maxHistory
+	}
+	head, err := a.resolveBlock(params, 1)
+	if err != nil {
+		return nil, err
+	}
+
+	// Percentiles of the priority fees paid in each block, when asked for.
+	var percentiles []float64
+	if len(params) > 2 {
+		json.Unmarshal(params[2], &percentiles)
+	}
+
+	newest := head.NumberU64()
+	oldest := uint64(0)
+	if newest+1 > count {
+		oldest = newest + 1 - count
+	}
+
+	bc := a.backend.Chain()
+	baseFees := []string{}
+	gasUsedRatio := []float64{}
+	rewards := [][]string{}
+
+	for n := oldest; n <= newest; n++ {
+		block := bc.GetBlockByNumber(n)
+		if block == nil {
+			continue
+		}
+		baseFees = append(baseFees, common.EncodeHexBig(block.BaseFee()))
+		ratio := 0.0
+		if block.GasLimit() > 0 {
+			ratio = float64(block.GasUsed()) / float64(block.GasLimit())
+		}
+		gasUsedRatio = append(gasUsedRatio, ratio)
+
+		if percentiles != nil {
+			rewards = append(rewards, blockRewardPercentiles(block, percentiles))
+		}
+	}
+
+	// The base fee of the block that would come next.
+	nextBase := bc.Config().CalcBaseFee(head.Header())
+	baseFees = append(baseFees, common.EncodeHexBig(nextBase))
+
+	out := map[string]any{
+		"oldestBlock":   common.EncodeHexUint(oldest),
+		"baseFeePerGas": baseFees,
+		"gasUsedRatio":  gasUsedRatio,
+	}
+	if percentiles != nil {
+		out["reward"] = rewards
+	}
+	return out, nil
+}
+
+// blockRewardPercentiles returns the priority fees at the requested percentiles
+// of a block's transactions, ordered by what they actually paid.
+func blockRewardPercentiles(block *core.Block, percentiles []float64) []string {
+	txs := block.Transactions()
+	if len(txs) == 0 {
+		out := make([]string, len(percentiles))
+		for i := range out {
+			out[i] = "0x0"
+		}
+		return out
+	}
+
+	tips := make([]*big.Int, 0, len(txs))
+	for _, tx := range txs {
+		tips = append(tips, tx.EffectiveTip(block.BaseFee()))
+	}
+	sort.Slice(tips, func(i, j int) bool { return tips[i].Cmp(tips[j]) < 0 })
+
+	out := make([]string, len(percentiles))
+	for i, p := range percentiles {
+		idx := int(p / 100 * float64(len(tips)-1))
+		if idx < 0 {
+			idx = 0
+		}
+		if idx >= len(tips) {
+			idx = len(tips) - 1
+		}
+		out[i] = common.EncodeHexBig(tips[idx])
+	}
+	return out
+}
+
+// Methods that have no meaning on a proof-of-stake chain with no uncles, but
+// which tooling probes and expects an answer to.
+
+func (a *API) protocolVersion(params []json.RawMessage) (any, error) { return "0x41", nil }
+func (a *API) mining(params []json.RawMessage) (any, error)          { return false, nil }
+func (a *API) hashrate(params []json.RawMessage) (any, error)        { return "0x0", nil }
+func (a *API) uncleCount(params []json.RawMessage) (any, error)      { return "0x0", nil }
+
+func (a *API) coinbase(params []json.RawMessage) (any, error) {
+	return a.backend.Chain().CurrentBlock().Coinbase().Hex(), nil
+}
+
+func (a *API) getBlockTxCountByHash(params []json.RawMessage) (any, error) {
+	hash, err := decodeHash(params, 0)
+	if err != nil {
+		return nil, err
+	}
+	block := a.backend.Chain().GetBlockByHash(hash)
+	if block == nil {
+		return nil, nil
+	}
+	return common.EncodeHexUint(uint64(len(block.Transactions()))), nil
+}
+
+func (a *API) getTransactionByBlockNumberAndIndex(params []json.RawMessage) (any, error) {
+	block, err := a.resolveBlock(params, 0)
+	if err != nil {
+		return nil, err
+	}
+	return a.transactionAt(block, params, 1)
+}
+
+func (a *API) getTransactionByBlockHashAndIndex(params []json.RawMessage) (any, error) {
+	hash, err := decodeHash(params, 0)
+	if err != nil {
+		return nil, err
+	}
+	block := a.backend.Chain().GetBlockByHash(hash)
+	if block == nil {
+		return nil, nil
+	}
+	return a.transactionAt(block, params, 1)
+}
+
+func (a *API) transactionAt(block *core.Block, params []json.RawMessage, index int) (any, error) {
+	raw, err := decodeParam[string](params, index)
+	if err != nil {
+		return nil, err
+	}
+	position, err := common.DecodeHexUint(raw)
+	if err != nil {
+		return nil, NewError(CodeInvalidParams, "index: %v", err)
+	}
+	txs := block.Transactions()
+	if position >= uint64(len(txs)) {
+		return nil, nil
+	}
+	return a.marshalTransaction(txs[position], block.Hash(), block.NumberU64(), position), nil
 }
 
 func (a *API) getBlockTxCountByNumber(params []json.RawMessage) (any, error) {
@@ -865,6 +1054,19 @@ func bloomMayContain(bloom core.Bloom, addresses []common.Address, topics [][]co
 
 // --- marshalling ---
 
+// emptyUnclesHash is keccak256(rlp([])), the value Ethereum blocks carry when
+// they have no uncles — which here is always.
+const emptyUnclesHash = "0x1dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347"
+
+// randaoMixField renders the proposer's reveal as the 32-byte value clients
+// expect to find in mixHash.
+func randaoMixField(reveal []byte) string {
+	if len(reveal) == 0 {
+		return common.Hash{}.Hex()
+	}
+	return common.Keccak256(reveal).Hex()
+}
+
 func (a *API) marshalBlock(block *core.Block, fullTxs bool) map[string]any {
 	header := block.Header()
 	out := map[string]any{
@@ -882,7 +1084,26 @@ func (a *API) marshalBlock(block *core.Block, fullTxs bool) map[string]any {
 		"extraData":        common.EncodeHex(header.Extra),
 		"baseFeePerGas":    common.EncodeHexBig(header.BaseFee),
 		"size":             common.EncodeHexUint(block.Size()),
-		"proposerSeal":     common.EncodeHex(header.ProposerSeal),
+
+		// Fields this chain has no use for, reported anyway because clients
+		// parse the block object against Ethereum's shape and reject it
+		// outright when one is missing — even one that could only ever hold a
+		// constant here.
+		"difficulty":      "0x0",
+		"totalDifficulty": "0x0",
+		"nonce":           "0x0000000000000000",
+		"sha3Uncles":      emptyUnclesHash,
+		"uncles":          []string{},
+
+		// Post-merge Ethereum reuses mixHash to carry the beacon randomness,
+		// and tooling reads prevRandao from it. This chain's randomness belongs
+		// in the same place.
+		"mixHash": randaoMixField(header.RandaoReveal),
+
+		// This chain's own fields, which no Ethereum client will look at.
+		"proposerSeal":  common.EncodeHex(header.ProposerSeal),
+		"round":         common.EncodeHexUint(header.Round),
+		"justification": common.EncodeHex(header.Justification),
 	}
 
 	txs := block.Transactions()
@@ -918,6 +1139,26 @@ func (a *API) marshalTransaction(tx *core.Transaction, blockHash common.Hash, bl
 		"v":                    common.EncodeHexBig(v),
 		"r":                    common.EncodeHexBig(r),
 		"s":                    common.EncodeHexBig(s),
+		// Typed transactions report the parity bit under its own name; clients
+		// prefer it to v, and some require it.
+		"yParity": common.EncodeHexUint(parityOf(tx, v)),
+	}
+
+	// An access list is part of a typed transaction's shape, so it is reported
+	// even when empty rather than left out.
+	if tx.Type() != core.LegacyTxType {
+		accessList := []map[string]any{}
+		for _, tuple := range tx.AccessList() {
+			keys := make([]string, 0, len(tuple.StorageKeys))
+			for _, key := range tuple.StorageKeys {
+				keys = append(keys, key.Hex())
+			}
+			accessList = append(accessList, map[string]any{
+				"address":     tuple.Address.Hex(),
+				"storageKeys": keys,
+			})
+		}
+		out["accessList"] = accessList
 	}
 	if to := tx.To(); to != nil {
 		out["to"] = to.Hex()
@@ -969,6 +1210,23 @@ func (a *API) marshalReceipt(receipt *core.Receipt, tx *core.Transaction, entry 
 		out["contractAddress"] = receipt.ContractAddress.Hex()
 	}
 	return out
+}
+
+// parityOf returns the signature's parity bit, which for a legacy transaction
+// is buried inside the EIP-155 encoding of v.
+func parityOf(tx *core.Transaction, v *big.Int) uint64 {
+	if v == nil {
+		return 0
+	}
+	if tx.Type() != core.LegacyTxType {
+		return v.Uint64() & 1
+	}
+	raw := v.Uint64()
+	if raw == 27 || raw == 28 {
+		return raw - 27
+	}
+	// v = chainID*2 + 35 + parity
+	return (raw - 35) & 1
 }
 
 func marshalLog(log *core.Log) map[string]any {
