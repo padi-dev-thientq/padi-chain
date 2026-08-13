@@ -7,7 +7,9 @@ import (
 
 	"layer1/common"
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/evm"
+	"layer1/staking"
 	"layer1/state"
 )
 
@@ -88,6 +90,13 @@ func (p *Processor) Process(block *core.Block, statedb *state.StateDB, finalized
 		logs = append(logs, receipt.Logs...)
 	}
 
+	// Fold the proposer's reveal into the accumulated randomness before the
+	// epoch transition, so the seed a new epoch inherits includes every block
+	// of the one that just ended.
+	if err := p.applyRandao(statedb, header); err != nil {
+		return nil, nil, 0, err
+	}
+
 	// The epoch transition runs after the block's transactions, so a deposit
 	// in the boundary block itself is visible to the activation queue.
 	if _, err := p.ProcessEpochBoundary(statedb, header, finalizedNumber); err != nil {
@@ -138,6 +147,42 @@ func (p *Processor) applyTransaction(vm *evm.EVM, tx *core.Transaction, statedb 
 	}
 	receipt.BlockNumber = header.Number
 	return receipt, nil
+}
+
+// ApplyRandao verifies a block's reveal and folds it into the state.
+//
+// A block builder has to apply this exactly as a verifier does, or the state
+// root it computes will not be the one everyone else derives.
+func (p *Processor) ApplyRandao(statedb *state.StateDB, header *core.Header) error {
+	return p.applyRandao(statedb, header)
+}
+
+// applyRandao verifies the proposer's reveal and mixes it into the state.
+//
+// The reveal is checked against the proposer's registered attestation key, so a
+// proposer cannot contribute randomness it did not produce, and cannot choose
+// among alternatives: a BLS signature is unique per key and message.
+func (p *Processor) applyRandao(statedb *state.StateDB, header *core.Header) error {
+	if len(header.RandaoReveal) == 0 {
+		// Genesis-era blocks predate the mechanism; a missing reveal simply
+		// contributes nothing.
+		return nil
+	}
+	registry := staking.NewRegistry(statedb)
+	validator, err := registry.ByAddress(header.Coinbase)
+	if err != nil {
+		return fmt.Errorf("processor: block %d has a reveal from an unregistered proposer: %w", header.NumberU64(), err)
+	}
+	key, err := bls12381.PublicKeyFromBytes(validator.BLSPublicKey)
+	if err != nil {
+		return fmt.Errorf("processor: proposer %s has no usable attestation key: %w", header.Coinbase, err)
+	}
+	epoch := staking.EpochOf(header.NumberU64())
+	if err := core.VerifyRandaoReveal(p.config.ChainID, epoch, key, header.RandaoReveal); err != nil {
+		return fmt.Errorf("processor: block %d carries an invalid randao reveal: %w", header.NumberU64(), err)
+	}
+	registry.SetRandaoMix(core.MixRandao(registry.RandaoMix(), header.RandaoReveal))
+	return nil
 }
 
 // NewBlockContext builds the EVM's view of the block being executed.

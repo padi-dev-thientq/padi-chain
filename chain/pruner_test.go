@@ -14,6 +14,8 @@ import (
 	"layer1/crypto/secp256k1"
 	"layer1/db"
 	"layer1/miner"
+	"layer1/staking"
+	"layer1/state"
 	"layer1/trie"
 )
 
@@ -307,4 +309,15 @@ func TestConcurrentPruneIsRejected(t *testing.T) {
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
+}
+
+// newStandaloneRegistry returns a registry over empty state, for tests that
+// exercise selection logic without building a chain.
+func newStandaloneRegistry(t *testing.T) *staking.Registry {
+	t.Helper()
+	sdb, err := state.New(common.Hash{}, db.NewMemoryDB())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return staking.NewRegistry(sdb)
 }

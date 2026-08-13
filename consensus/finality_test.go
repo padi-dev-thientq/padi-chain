@@ -131,16 +131,31 @@ func TestPoolRejectsOutsidersAndForgeries(t *testing.T) {
 		t.Fatalf("got %v, want ErrUnknownIndex", err)
 	}
 
-	// A vote signed by one validator but claiming another's index: with BLS
-	// the signature does not name its signer, so this is exactly the forgery
-	// the pool has to catch.
+	// A vote signed by one validator but claiming another's index. With BLS
+	// the signature does not name its signer, so the forgery is only caught
+	// when the aggregate is checked — and what matters is that it never
+	// produces a valid certificate.
 	impostor := core.SignAttestation(secrets[0], testChainID, 1, 1, hash)
-	if _, err := pool.Add(impostor); err == nil {
-		t.Fatal("a vote claiming another validator's index was accepted")
+	if _, err := pool.Add(impostor); err != nil {
+		t.Fatalf("the pool refused to hold the vote: %v", err)
+	}
+	for i := 2; i < 4; i++ {
+		pool.Add(pool.Attest(secrets[i], uint64(i), 1, hash))
+	}
+	// Three votes are a quorum for four validators, but one of them is forged.
+	if qc := pool.Certificate(1, hash); qc != nil {
+		t.Fatal("a certificate was built from a forged vote")
+	}
+	// The forgery is evicted, so an honest quorum can still form afterwards.
+	if _, err := pool.Add(pool.Attest(secrets[1], 1, 1, hash)); err != nil {
+		t.Fatal(err)
+	}
+	if pool.Certificate(1, hash) == nil {
+		t.Fatal("the pool could not recover after evicting the forged vote")
 	}
 
 	// A repeat of the same vote is not new.
-	good := pool.Attest(secrets[0], 0, 1, hash)
+	good := pool.Attest(secrets[0], 0, 2, hash)
 	if added, _ := pool.Add(good); !added {
 		t.Fatal("the first vote was not recorded")
 	}

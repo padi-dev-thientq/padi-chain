@@ -31,6 +31,12 @@ type Header struct {
 	// over when the scheduled one does not deliver, which is what keeps the
 	// chain alive through a validator outage.
 	Round uint64
+	// RandaoReveal is the proposer's BLS signature over the epoch number. It
+	// is unpredictable to everyone but the proposer and cannot be ground for a
+	// favourable outcome, because a BLS signature is unique: there is exactly
+	// one valid signature per key and message, so the proposer has no choice
+	// about what it contributes.
+	RandaoReveal []byte
 	// Justification is the encoded quorum certificate finalizing an ancestor.
 	// Carrying it in the header is what lets a node that was offline when the
 	// votes were cast still verify finality from the chain alone.
@@ -61,6 +67,7 @@ func CopyHeader(h *Header) *Header {
 	out.Number = copyBig(h.Number)
 	out.BaseFee = copyBig(h.BaseFee)
 	out.Extra = common.CopyBytes(h.Extra)
+	out.RandaoReveal = common.CopyBytes(h.RandaoReveal)
 	out.Justification = common.CopyBytes(h.Justification)
 	out.ProposerSeal = common.CopyBytes(h.ProposerSeal)
 	return &out
@@ -71,7 +78,7 @@ func (h *Header) SealingHash() common.Hash {
 	enc, err := rlp.Encode([]any{
 		h.ParentHash, h.Coinbase, h.StateRoot, h.TxRoot, h.ReceiptRoot,
 		h.Bloom, h.Number, h.GasLimit, h.GasUsed, h.Time, h.Extra, h.BaseFee,
-		h.Round, h.Justification,
+		h.Round, h.RandaoReveal, h.Justification,
 	})
 	if err != nil {
 		panic(fmt.Sprintf("core: encoding sealing hash: %v", err))
@@ -155,6 +162,8 @@ func (b *Block) Bloom() Bloom               { return b.header.Bloom }
 func (b *Block) Extra() []byte              { return common.CopyBytes(b.header.Extra) }
 func (b *Block) Seal() []byte               { return common.CopyBytes(b.header.ProposerSeal) }
 func (b *Block) Round() uint64              { return b.header.Round }
+
+func (b *Block) RandaoReveal() []byte { return common.CopyBytes(b.header.RandaoReveal) }
 
 // Justification returns the quorum certificate this block carries, or nil when
 // it justifies nothing.

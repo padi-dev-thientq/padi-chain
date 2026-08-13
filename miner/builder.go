@@ -11,9 +11,11 @@ import (
 	"layer1/common"
 	"layer1/consensus"
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/crypto/secp256k1"
 	"layer1/evm"
 	"layer1/processor"
+	"layer1/staking"
 	"layer1/state"
 )
 
@@ -25,12 +27,18 @@ type Builder struct {
 	chain  *chain.BlockChain
 	engine consensus.Engine
 	key    *secp256k1.PrivateKey
+	// blsKey signs the randomness reveal every block carries.
+	blsKey *bls12381.SecretKey
 	// coinbase is the address fees are credited to; it must be the validator's.
 	coinbase common.Address
 	// attestations supplies the quorum certificate a new block carries, which
 	// is how finality reaches nodes that were not online to collect the votes.
 	attestations *consensus.AttestationPool
 }
+
+// SetBLSKey attaches the key the proposer reveals randomness with. Without it
+// a block carries no reveal and contributes nothing to the mix.
+func (b *Builder) SetBLSKey(key *bls12381.SecretKey) { b.blsKey = key }
 
 // SetAttestationPool attaches the pool a block's justification is drawn from.
 func (b *Builder) SetAttestationPool(pool *consensus.AttestationPool) {
@@ -86,6 +94,12 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 		return nil, err
 	}
 
+	// Reveal this proposer's randomness contribution. It signs the epoch, not
+	// the block, so it is fixed before the proposer knows what it will build.
+	if b.blsKey != nil {
+		header.RandaoReveal = core.SignRandaoReveal(b.blsKey, config.ChainID, staking.EpochOf(next))
+	}
+
 	// Carry proof that the parent is final, when the votes are in. Embedding it
 	// makes finality part of the chain rather than per-node local knowledge.
 	if b.attestations != nil {
@@ -138,6 +152,13 @@ func (b *Builder) BuildBlock(candidates core.Transactions) (*Result, error) {
 	}
 
 	header.GasUsed = usedGas
+
+	// Fold in the randomness reveal, then run the end-of-epoch transition —
+	// the same operations a verifier performs, in the same order. Skipping
+	// either would produce a state root nobody else agrees with.
+	if err := proc.ApplyRandao(statedb, header); err != nil {
+		return nil, fmt.Errorf("miner: randao: %w", err)
+	}
 
 	// Run the same end-of-epoch transition a verifier will run. Skipping it
 	// here would produce a state root nobody else agrees with.

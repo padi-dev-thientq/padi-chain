@@ -72,6 +72,11 @@ type Engine interface {
 type ValidatorSetProvider interface {
 	// ValidatorsAt returns the set that governs the given block height.
 	ValidatorsAt(blockNumber uint64) ([]common.Address, error)
+	// ProposerAtHeight returns the validator entitled to propose a block in a
+	// given round, selected by stake from the epoch's randomness. It returns
+	// false when the chain cannot answer, in which case the engine falls back
+	// to a plain rotation.
+	ProposerAtHeight(blockNumber, round uint64) (common.Address, bool)
 }
 
 // PoA is a round-based engine over a validator set. The set is fixed at genesis
@@ -188,6 +193,15 @@ func (p *PoA) ProposerAt(number uint64) (common.Address, error) {
 // given round. Each round hands the turn to the next validator in the
 // rotation, so an unavailable proposer costs one round rather than the chain.
 func (p *PoA) ProposerAtRound(number, round uint64) (common.Address, error) {
+	// With a chain attached, the proposer is drawn from the epoch's randomness
+	// and weighted by stake. Round-robin is the fallback for genesis and for a
+	// chain that cannot yet answer, where a predictable schedule is harmless
+	// because there is nothing yet to attack.
+	if p.provider != nil {
+		if proposer, ok := p.provider.ProposerAtHeight(number, round); ok {
+			return proposer, nil
+		}
+	}
 	set := p.setFor(number)
 	if len(set) == 0 {
 		return common.Address{}, ErrNoValidators

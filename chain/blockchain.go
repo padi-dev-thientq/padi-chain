@@ -566,6 +566,35 @@ func (bc *BlockChain) genesisValidators() []common.Address {
 	return bc.engine.Validators()
 }
 
+// ProposerAtHeight returns the validator entitled to propose a block, drawn by
+// stake from the randomness settled at the end of the previous epoch.
+//
+// Using a settled seed is what makes the answer verifiable: every node reading
+// the same state computes the same proposer, and nobody can change it by
+// producing a different block now.
+func (bc *BlockChain) ProposerAtHeight(blockNumber, round uint64) (common.Address, bool) {
+	epoch := staking.EpochOf(blockNumber)
+	if epoch == 0 {
+		// The first epoch has no settled randomness behind it.
+		return common.Address{}, false
+	}
+	boundary := staking.EpochStart(epoch) - 1
+	header := bc.GetHeaderByNumber(boundary)
+	if header == nil {
+		return common.Address{}, false
+	}
+	statedb, err := bc.StateAt(header.StateRoot)
+	if err != nil {
+		return common.Address{}, false
+	}
+	registry := staking.NewRegistry(statedb)
+	proposer, err := registry.ProposerAt(epoch, registry.RandaoMix(), blockNumber, round)
+	if err != nil {
+		return common.Address{}, false
+	}
+	return proposer, true
+}
+
 // Validators returns the set governing the current head.
 func (bc *BlockChain) Validators() []common.Address {
 	set, err := bc.ValidatorsAt(bc.CurrentBlock().NumberU64() + 1)

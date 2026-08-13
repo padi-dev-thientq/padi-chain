@@ -144,6 +144,47 @@ func SignAttestationBLS(key *bls12381.SecretKey, chainID *big.Int, number uint64
 	return key.Sign(AttestationMessage(chainID, number, blockHash)).Bytes()
 }
 
+// RandaoMessage is what a proposer signs to reveal its randomness
+// contribution. Signing the epoch rather than the block means the reveal is
+// fixed before the proposer knows what block it will build, so it cannot try
+// alternatives until one produces a seed it likes.
+func RandaoMessage(chainID *big.Int, epoch uint64) []byte {
+	enc, err := rlp.Encode([]any{
+		[]byte("layer1/randao/v1"),
+		chainID,
+		epoch,
+	})
+	if err != nil {
+		panic(fmt.Sprintf("core: encoding randao message: %v", err))
+	}
+	return enc
+}
+
+// SignRandaoReveal produces a proposer's randomness contribution.
+func SignRandaoReveal(key *bls12381.SecretKey, chainID *big.Int, epoch uint64) []byte {
+	return key.Sign(RandaoMessage(chainID, epoch)).Bytes()
+}
+
+// VerifyRandaoReveal checks a reveal against the proposer's attestation key.
+func VerifyRandaoReveal(chainID *big.Int, epoch uint64, key *bls12381.PublicKey, reveal []byte) error {
+	if key == nil {
+		return fmt.Errorf("%w: the proposer has no attestation key", ErrAggregateInvalid)
+	}
+	sig, err := bls12381.SignatureFromBytes(reveal)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrAggregateInvalid, err)
+	}
+	if !bls12381.Verify(key, RandaoMessage(chainID, epoch), sig) {
+		return ErrAggregateInvalid
+	}
+	return nil
+}
+
+// MixRandao folds a reveal into the accumulated randomness.
+func MixRandao(mix common.Hash, reveal []byte) common.Hash {
+	return common.Keccak256(mix[:], reveal)
+}
+
 // NewAggregate starts an empty aggregate for a height.
 func NewAggregate(number uint64, blockHash common.Hash, validators int) *AggregateAttestation {
 	return &AggregateAttestation{

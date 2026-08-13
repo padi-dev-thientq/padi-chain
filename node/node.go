@@ -191,6 +191,7 @@ func New(config *Config) (*Node, error) {
 	if config.Validator != nil {
 		n.builder = miner.NewBuilder(bc, engine, config.Validator)
 		n.builder.SetAttestationPool(n.attestations)
+		n.builder.SetBLSKey(n.blsKey())
 	}
 	return n, nil
 }

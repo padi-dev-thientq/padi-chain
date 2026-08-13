@@ -151,6 +151,9 @@ func (p *AttestationPool) Add(attestation *core.Attestation) (bool, error) {
 		if previous.BlockHash == attestation.BlockHash {
 			return false, nil // the same vote again
 		}
+		// Both votes are verified here rather than taken at face value: acting
+		// on unverified evidence would let anyone get an honest validator
+		// slashed by forging a vote in its name.
 		proof, err := core.DetectEquivocation(p.chainID, key, previous, attestation)
 		if err != nil {
 			return false, err
@@ -165,13 +168,17 @@ func (p *AttestationPool) Add(attestation *core.Attestation) (bool, error) {
 		return false, nil
 	}
 
-	// The signature is checked before it is stored: an unverified vote in the
-	// pool would corrupt any aggregate built from it, and the aggregate would
-	// then fail with no indication of which vote was at fault.
-	if err := attestation.Verify(p.chainID, key); err != nil {
-		return false, err
-	}
-
+	// The signature is deliberately not checked here.
+	//
+	// Verifying every vote on arrival costs one pairing check per vote, which
+	// is exactly the work aggregation exists to avoid — the whole point is that
+	// a quorum should cost two pairings, not two hundred. Instead the aggregate
+	// is verified once when a certificate is built, and if it fails the pool
+	// falls back to checking votes individually to find the culprit.
+	//
+	// The one case that cannot wait is a conflicting vote, because acting on it
+	// gets a validator slashed. Those are verified below before any evidence is
+	// recorded.
 	byIndex[index] = attestation
 
 	byHash := p.votes[attestation.Number]
@@ -187,20 +194,60 @@ func (p *AttestationPool) Add(attestation *core.Attestation) (bool, error) {
 }
 
 // Certificate returns a quorum certificate for a block, or nil if the votes
-// collected so far fall short.
+// collected so far fall short or do not verify.
+//
+// This is where signatures are actually checked: once, over the aggregate, for
+// however many validators are in it. A single bad vote makes the aggregate fail
+// without saying which one it was, so the fallback below finds and evicts it,
+// and the next attempt succeeds with the rest.
 func (p *AttestationPool) Certificate(number uint64, blockHash common.Hash) *core.QuorumCert {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
+	for {
+		votes := p.votes[number][blockHash]
+		if len(votes) < core.Quorum(len(p.keys)) {
+			return nil
+		}
+		qc, err := core.NewQuorumCert(number, blockHash, len(p.keys), votes)
+		if err != nil {
+			return nil
+		}
+		if _, err := qc.Verify(p.chainID, p.keys); err == nil {
+			return qc
+		}
+		// Something in there does not verify. Find it the slow way, drop it,
+		// and try again with what is left.
+		if !p.evictInvalidLocked(number, blockHash) {
+			return nil
+		}
+	}
+}
+
+// evictInvalidLocked removes votes that fail individual verification, and
+// reports whether it removed any.
+func (p *AttestationPool) evictInvalidLocked(number uint64, blockHash common.Hash) bool {
 	votes := p.votes[number][blockHash]
-	if len(votes) < core.Quorum(len(p.keys)) {
-		return nil
+	removed := false
+	for index, signature := range votes {
+		if index >= len(p.keys) || p.keys[index] == nil {
+			delete(votes, index)
+			removed = true
+			continue
+		}
+		attestation := &core.Attestation{
+			Number:    number,
+			BlockHash: blockHash,
+			Index:     uint64(index),
+			Signature: signature,
+		}
+		if err := attestation.Verify(p.chainID, p.keys[index]); err != nil {
+			delete(votes, index)
+			delete(p.byIndex[number], index)
+			removed = true
+		}
 	}
-	qc, err := core.NewQuorumCert(number, blockHash, len(p.keys), votes)
-	if err != nil {
-		return nil
-	}
-	return qc
+	return removed
 }
 
 // VoteCount returns how many distinct validators have voted for a block.

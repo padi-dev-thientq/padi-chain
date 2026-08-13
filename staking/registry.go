@@ -381,3 +381,69 @@ func (r *Registry) SaveEpochState(s EpochState) {
 	putUint64(raw[24:32], s.ExitQueueCount)
 	r.state.SetState(StakingAddress, slotEpochState, common.Hash(raw))
 }
+
+// The RANDAO mix.
+//
+// Every block folds its proposer's reveal into a running value held in state.
+// Because the reveal is a BLS signature, which is unique per key and message,
+// a proposer has no freedom in what it contributes: it can either publish its
+// block or withhold it, and nothing in between. That leaves exactly one bit of
+// influence per slot, which is the same residual bias Ethereum lives with.
+
+var slotRandaoMix = common.Keccak256([]byte("staking/randao-mix"))
+
+// RandaoMix returns the accumulated randomness.
+func (r *Registry) RandaoMix() common.Hash {
+	return r.state.GetState(StakingAddress, slotRandaoMix)
+}
+
+// SetRandaoMix stores the accumulated randomness.
+func (r *Registry) SetRandaoMix(mix common.Hash) {
+	r.state.SetState(StakingAddress, slotRandaoMix, mix)
+}
+
+// ProposerAt selects the proposer for a slot, weighted by stake.
+//
+// Selection walks the active set accumulating effective balance until it passes
+// a threshold drawn from the seed, so a validator's chance of proposing is its
+// share of the stake. The round is mixed in as well, so a fallback round picks
+// a different validator rather than the same one twice.
+//
+// The seed comes from a settled epoch, which means proposers are known for the
+// current epoch but not beyond it. That is the same window Ethereum operates
+// with: it removes the ability to plan an attack far ahead without claiming to
+// make the schedule secret.
+func (r *Registry) ProposerAt(epoch uint64, seed common.Hash, slot, round uint64) (common.Address, error) {
+	active, err := r.ActiveAt(epoch)
+	if err != nil {
+		return common.Address{}, err
+	}
+	if len(active) == 0 {
+		return common.Address{}, ErrNotFound
+	}
+
+	total := new(big.Int)
+	for _, v := range active {
+		total.Add(total, v.EffectiveBalance)
+	}
+	if total.Sign() == 0 {
+		// No stake to weight by; fall back to a plain rotation so the chain
+		// still makes progress.
+		return active[(slot+round)%uint64(len(active))].Address, nil
+	}
+
+	var slotBytes, roundBytes [8]byte
+	putUint64(slotBytes[:], slot)
+	putUint64(roundBytes[:], round)
+	draw := common.Keccak256(seed[:], slotBytes[:], roundBytes[:])
+
+	target := new(big.Int).Mod(draw.Big(), total)
+	cumulative := new(big.Int)
+	for _, v := range active {
+		cumulative.Add(cumulative, v.EffectiveBalance)
+		if cumulative.Cmp(target) > 0 {
+			return v.Address, nil
+		}
+	}
+	return active[len(active)-1].Address, nil
+}
