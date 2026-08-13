@@ -247,7 +247,8 @@ cluster: build ## Start a four-validator cluster locally (ports 8541-8544)
 		v=$$(./$(BINARY) account list -datadir $(CLUSTER)/n$$i | head -1); \
 		p=""; [ $$i -gt 1 ] && p="-peers 127.0.0.1:30301"; \
 		./$(BINARY) run -datadir $(CLUSTER)/n$$i -mine -validator $$v -password $(PASSWORD) \
-			-rpc 127.0.0.1:854$$i -addr 127.0.0.1:3030$$i -monitor 127.0.0.1:606$$i $$p \
+			-rpc 127.0.0.1:854$$i -addr 127.0.0.1:3030$$i -monitor 127.0.0.1:606$$i \
+			-nat extip:127.0.0.1 $$p \
 			> $(CLUSTER)/n$$i.log 2>&1 & \
 	done
 	@printf 'waiting for the first finalized block'

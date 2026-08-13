@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -60,6 +61,11 @@ type Config struct {
 	PingInterval time.Duration
 	// DialRetry is how long to wait before redialling a lost peer.
 	DialRetry time.Duration
+	// NAT decides the address this node advertises to peers.
+	NAT NATMode
+	// DNSSeeds are domains whose TXT records list entry points, consulted only
+	// when no bootstrap peers were given.
+	DNSSeeds []string
 }
 
 // DefaultConfig returns usable networking defaults.
@@ -97,6 +103,9 @@ type Server struct {
 
 	// addresses is where peers learned from other peers are remembered.
 	addresses *addressBook
+
+	// external is the address this node tells peers to dial it on.
+	external *externalAddress
 }
 
 // NewServer creates a network server.
@@ -113,6 +122,7 @@ func NewServer(config *Config, backend Backend, log *slog.Logger) *Server {
 		seen:      newSeenCache(8192),
 		scores:    newScoreboard(),
 		addresses: newAddressBook(1024),
+		external:  newExternalAddress(),
 	}
 }
 
@@ -129,7 +139,7 @@ func (s *Server) Start() error {
 		s.log.Info("p2p listening", "addr", listener.Addr().String())
 	}
 
-	for _, addr := range s.config.Bootstrap {
+	for _, addr := range s.bootstrapAddresses() {
 		s.addresses.add(addr)
 		s.wg.Add(1)
 		go s.dialLoop(addr)
@@ -186,8 +196,14 @@ func (s *Server) acceptLoop() {
 }
 
 // dialLoop keeps trying to reach a peer until the server stops.
-func (s *Server) dialLoop(addr string) {
+func (s *Server) dialLoop(raw string) {
 	defer s.wg.Done()
+	target, err := ParseNodeURL(raw)
+	if err != nil {
+		s.log.Error("ignoring bootstrap peer", "addr", raw, "err", err)
+		return
+	}
+	addr := target.Addr
 	for {
 		select {
 		case <-s.quit:
@@ -198,7 +214,7 @@ func (s *Server) dialLoop(addr string) {
 		if s.PeerCount() < s.config.MaxPeers {
 			conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
 			if err == nil {
-				s.handleConnection(conn, false)
+				s.handleConnectionAs(conn, false, target)
 			} else {
 				s.log.Debug("p2p dial failed", "addr", addr, "err", err)
 			}
@@ -213,6 +229,13 @@ func (s *Server) dialLoop(addr string) {
 }
 
 func (s *Server) handleConnection(conn net.Conn, inbound bool) {
+	s.handleConnectionAs(conn, inbound, NodeURL{})
+}
+
+// handleConnectionAs is handleConnection with an expectation about who should
+// be on the other end. The expectation is empty for inbound connections and for
+// addresses given without an identity.
+func (s *Server) handleConnectionAs(conn net.Conn, inbound bool, expected NodeURL) {
 	if s.PeerCount() >= s.config.MaxPeers {
 		conn.Close()
 		return
@@ -228,6 +251,17 @@ func (s *Server) handleConnection(conn net.Conn, inbound bool) {
 		return
 	}
 	secure := &secureConn{conn: conn, session: sess}
+
+	// The handshake proves who answered; it cannot know who was meant to. When
+	// the address named an identity, that is checked here — otherwise dialling
+	// a bootstrap node would accept whoever managed to answer at its address,
+	// which is the whole attack the identity is there to stop.
+	if expected.wantsID() && sess.remoteID != expected.ID {
+		s.log.Warn("peer identity does not match the address dialled",
+			"addr", expected.Addr, "expected", expected.ID.String(), "got", sess.remoteID.String())
+		conn.Close()
+		return
+	}
 
 	if s.IsBanned(sess.remoteID) {
 		s.log.Debug("rejected banned peer", "id", sess.remoteID.String())
@@ -471,15 +505,19 @@ func (s *Server) RequestStateNodes(hashes []common.Hash) bool {
 }
 
 // AddPeer dials an additional peer at runtime.
-func (s *Server) AddPeer(addr string) error {
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+func (s *Server) AddPeer(raw string) error {
+	target, err := ParseNodeURL(raw)
+	if err != nil {
+		return err
+	}
+	conn, err := net.DialTimeout("tcp", target.Addr, 5*time.Second)
 	if err != nil {
 		return err
 	}
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		s.handleConnection(conn, false)
+		s.handleConnectionAs(conn, false, target)
 	}()
 	return nil
 }
@@ -522,3 +560,40 @@ func (c *seenCache) has(hash common.Hash) bool {
 }
 
 var errServerStopped = errors.New("p2p: server stopped")
+
+// listenPort is the port peers should dial to reach this node.
+func (s *Server) listenPort() int {
+	if s.listener == nil {
+		return 0
+	}
+	if addr, ok := s.listener.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	return 0
+}
+
+// noteObservedAddress records a peer's report of where it sees this node.
+//
+// The reporting peer is identified by the key it authenticated with rather than
+// by its address, so one machine cannot vote repeatedly by reconnecting from a
+// range of ports.
+func (s *Server) noteObservedAddress(observed string, from NodeID) {
+	if observed == "" || s.config.NAT.disabled || s.config.NAT.fixed != nil {
+		return
+	}
+	if s.external.note(observed, from.String(), s.listenPort()) {
+		s.log.Info("learned our external address", "url", s.NodeURL())
+	}
+}
+
+// ExternalAddr returns the address this node advertises, or empty if it does
+// not know one yet.
+func (s *Server) ExternalAddr() string {
+	if s.config.NAT.disabled {
+		return ""
+	}
+	if ip := s.config.NAT.fixed; ip != nil {
+		return net.JoinHostPort(ip.String(), strconv.Itoa(s.listenPort()))
+	}
+	return s.external.get()
+}

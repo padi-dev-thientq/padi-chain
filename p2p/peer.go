@@ -106,7 +106,9 @@ func (p *Peer) handshake() error {
 		Genesis:    p.server.backend.Genesis(),
 		Head:       head,
 		HeadNumber: number,
+		ListenPort: uint64(p.server.listenPort()),
 		NodeName:   p.server.config.NodeName,
+		Observed:   p.conn.RemoteAddr().String(),
 	}
 
 	p.conn.SetDeadline(time.Now().Add(10 * time.Second))
@@ -140,6 +142,9 @@ func (p *Peer) handshake() error {
 
 	p.status = theirs
 	p.setHead(theirs.Head, theirs.HeadNumber)
+	// What the peer says it sees is a claim, not a fact: it is counted as one
+	// vote and only becomes this node's address once enough peers agree.
+	p.server.noteObservedAddress(theirs.Observed, p.id)
 	return nil
 }
 

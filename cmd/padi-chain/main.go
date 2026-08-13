@@ -271,6 +271,8 @@ func cmdRun(args []string) error {
 	rpcAddr := fs.String("rpc", "127.0.0.1:8545", "JSON-RPC listen address (empty to disable)")
 	monitorAddr := fs.String("monitor", "127.0.0.1:6060", "metrics and health listen address (empty to disable)")
 	bootstrap := fs.String("peers", "", "comma-separated bootstrap peer addresses")
+	dnsSeeds := fs.String("dnsseeds", "", "comma-separated domains whose TXT records list entry points")
+	nat := fs.String("nat", "auto", `how to work out the address peers should dial: "auto", "extip:<ip>" or "none"`)
 	mine := fs.Bool("mine", false, "produce blocks when it is this validator's turn")
 	validator := fs.String("validator", "", "validator address to seal with")
 	passphrase := fs.String("password", "", "passphrase to unlock the validator key")
@@ -288,6 +290,7 @@ func cmdRun(args []string) error {
 		RPCAddr:     *rpcAddr,
 		MonitorAddr: *monitorAddr,
 		NodeName:    *nodeName,
+		NAT:         *nat,
 		Mine:        *mine,
 		Logger:      log,
 		Prune: chain.PruneConfig{
@@ -295,6 +298,11 @@ func cmdRun(args []string) error {
 			Retain:   *retain,
 			Interval: 10 * time.Minute,
 		},
+	}
+	if *dnsSeeds != "" {
+		for _, domain := range strings.Split(*dnsSeeds, ",") {
+			config.DNSSeeds = append(config.DNSSeeds, strings.TrimSpace(domain))
+		}
 	}
 	if *bootstrap != "" {
 		for _, peer := range strings.Split(*bootstrap, ",") {
@@ -605,6 +613,9 @@ func cmdStatus(args []string) error {
 	fmt.Printf("quorum:   %v of %v validators\n", info["quorum"], info["validators"])
 	fmt.Printf("genesis:  %v\n", info["genesis"])
 	fmt.Printf("peers:    %v\n", info["peers"])
+	if url, ok := info["nodeUrl"].(string); ok && url != "" {
+		fmt.Printf("node url: %s\n", url)
+	}
 	if pool, ok := info["txpool"].(map[string]any); ok {
 		fmt.Printf("txpool:   %v pending, %v queued\n", pool["pending"], pool["queued"])
 	}

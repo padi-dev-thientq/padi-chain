@@ -48,7 +48,9 @@ func newAddressBook(limit int) *addressBook {
 
 // add records an address, ignoring anything unusable.
 func (b *addressBook) add(addr string) bool {
-	if !isDialable(addr) {
+	// Entries may be bare host:port or full node URLs, so dialability is
+	// judged on the address the URL resolves to rather than the raw string.
+	if _, err := ParseNodeURL(addr); err != nil {
 		return false
 	}
 	b.mu.Lock()
@@ -67,18 +69,70 @@ func (b *addressBook) add(addr string) bool {
 
 // evictWorstLocked drops the least promising entry: the one that has failed
 // most, breaking ties by age.
+// evictWorstLocked frees a slot, taking from the most crowded netgroup first.
+//
+// Ranking purely on failures and age would hand the book to whoever floods it:
+// a few thousand freshly minted addresses from one attacker's subnet all look
+// new and unfailed, so they push out every peer the node had actually reached,
+// and from then on it hears only from that attacker. Evicting from whichever
+// netgroup is largest means a flood displaces itself, and the cost of filling
+// the book stops being a matter of inventing addresses and starts being a
+// matter of controlling networks.
 func (b *addressBook) evictWorstLocked() {
-	var worst *addressEntry
+	counts := make(map[string]int, len(b.known))
 	for _, entry := range b.known {
-		if worst == nil ||
-			entry.failures > worst.failures ||
-			(entry.failures == worst.failures && entry.lastSeen.Before(worst.lastSeen)) {
-			worst = entry
+		counts[netgroup(entry.addr)]++
+	}
+
+	var worst *addressEntry
+	worstCount := 0
+	for _, entry := range b.known {
+		count := counts[netgroup(entry.addr)]
+		if worst == nil || worseThan(entry, count, worst, worstCount) {
+			worst, worstCount = entry, count
 		}
 	}
 	if worst != nil {
 		delete(b.known, worst.addr)
 	}
+}
+
+// worseThan orders eviction candidates: crowded netgroup first, then the entry
+// that has failed most, then the one heard from longest ago.
+func worseThan(a *addressEntry, aCount int, b *addressEntry, bCount int) bool {
+	if aCount != bCount {
+		return aCount > bCount
+	}
+	if a.failures != b.failures {
+		return a.failures > b.failures
+	}
+	return a.lastSeen.Before(b.lastSeen)
+}
+
+// netgroup is the part of an address an attacker cannot cheaply vary.
+//
+// Addresses are grouped by the first sixteen bits for IPv4 and the first
+// thirty-two for IPv6, which is Bitcoin's rule. It is a rough proxy for "under
+// one party's control" — wrong at the edges in both directions, and still the
+// difference between an attacker needing many networks and merely needing many
+// addresses. A name that has not been resolved is its own group.
+func netgroup(addr string) string {
+	target, err := ParseNodeURL(addr)
+	if err != nil {
+		return addr
+	}
+	host, _, err := net.SplitHostPort(target.Addr)
+	if err != nil {
+		return addr
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return "v4:" + v4[:2].String()
+	}
+	return "v6:" + ip.To16()[:4].String()
 }
 
 // markFailure records an unsuccessful dial, forgetting an address that has
@@ -127,9 +181,37 @@ func (b *addressBook) sample(n int) []string {
 	if n > len(entries) {
 		n = len(entries)
 	}
+
+	// Take at most one address per netgroup on each pass. The order above still
+	// decides who goes first, but a party holding many addresses in one network
+	// cannot take more than its share of the connections this node is about to
+	// make, or of the addresses it is about to pass on to others.
+	var order []string
+	byGroup := make(map[string][]string, len(entries))
+	for _, entry := range entries {
+		group := netgroup(entry.addr)
+		if _, ok := byGroup[group]; !ok {
+			order = append(order, group)
+		}
+		byGroup[group] = append(byGroup[group], entry.addr)
+	}
+
 	out := make([]string, 0, n)
-	for _, entry := range entries[:n] {
-		out = append(out, entry.addr)
+	for round := 0; len(out) < n; round++ {
+		progressed := false
+		for _, group := range order {
+			if len(out) == n {
+				break
+			}
+			if round >= len(byGroup[group]) {
+				continue
+			}
+			out = append(out, byGroup[group][round])
+			progressed = true
+		}
+		if !progressed {
+			break
+		}
 	}
 	return out
 }
@@ -183,9 +265,14 @@ func (s *Server) discoveryLoop() {
 // exchangeAddresses asks peers for addresses and offers our own.
 func (s *Server) exchangeAddresses() {
 	addresses := s.addresses.sample(MaxAddressesPerMessage)
-	if s.listener != nil {
-		// Advertise where we can be reached, so peers can dial back.
-		addresses = append(addresses, s.listener.Addr().String())
+	// Advertise where we can be reached, so peers can dial back. This has to be
+	// the address the outside world sees, not the socket this node bound: bound
+	// to 0.0.0.0 the socket's address is 0.0.0.0, and telling peers to dial
+	// that sends them nowhere.
+	// The full node URL is shared rather than the bare address, so the identity
+	// travels with it and a peer two hops away can still check who answers.
+	if url := s.NodeURL(); url != "" {
+		addresses = append(addresses, url)
 	}
 	payload, err := encodePayload(&AddressesPayload{Addresses: addresses})
 	if err != nil {
@@ -216,10 +303,14 @@ func (s *Server) topUpPeers() {
 		if _, ok := connected[addr]; ok {
 			continue
 		}
-		if addr == s.Addr() {
+		if addr == s.Addr() || addr == s.NodeURL() {
 			continue
 		}
-		conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		target, err := ParseNodeURL(addr)
+		if err != nil {
+			continue
+		}
+		conn, err := net.DialTimeout("tcp", target.Addr, 5*time.Second)
 		if err != nil {
 			s.addresses.markFailure(addr)
 			continue
@@ -230,7 +321,7 @@ func (s *Server) topUpPeers() {
 		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
-			s.handleConnection(conn, false)
+			s.handleConnectionAs(conn, false, target)
 		}()
 	}
 }

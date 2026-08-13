@@ -285,7 +285,58 @@ survive one failure; one validator survives nothing, and a single-node devnet ha
 no fault tolerance at all — it just does not notice, because the one node is
 always in the quorum.
 
-To put a validator on another machine:
+### Addresses
+
+A node is named the way Ethereum names one, identity first:
+
+```
+padi://<64-byte node key in hex>@<host>:<port>
+```
+
+`make status` prints this node's URL once it knows one, and `-peers` accepts
+either form. A bare `host:port` still works and is the sensible thing inside a
+private cluster; it says where to connect but not to whom, so anyone able to
+answer at that address completes a valid encrypted session as somebody else. For
+bootstrap addresses in particular that matters, because those decide which
+network a node joins — write those with the key.
+
+A node cannot learn its own public address by looking at its socket: bound to
+`0.0.0.0` it sees `0.0.0.0`, and behind NAT it sees a private address. Peers
+report what they see, and an address is adopted once three of them independently
+agree — one peer's word would let a single hostile connection choose what this
+node advertises to everyone. `-nat` decides the policy:
+
+| `-nat` | meaning |
+|---|---|
+| `auto` (default) | take the address peers agree on; advertise nothing until they do |
+| `extip:<ip>` | state the address outright, for a fixed public IP or a LAN |
+| `none` | advertise nothing; dial out only |
+
+Private and link-local addresses are never adopted automatically, since a peer
+told to dial `192.168.1.4` goes to its own network. On a LAN, say so with
+`-nat extip:192.168.1.4`.
+
+### Finding the network
+
+`-peers` is the direct answer. Beyond that a node falls back on the seeds
+compiled into it, which are deliberately empty: there is no public padi-chain
+network to seed from. Whoever launches one runs the entry points and puts their
+node URLs in `p2p.Bootnodes`, the way every client ships its foundation's
+bootnodes. `-dnsseeds <domain>` reads entry points from a domain's TXT records,
+which is how a running network changes its entry points after clients have
+shipped.
+
+What comes back from a seed is a hint, not a set of peers to trust: the genesis
+and chain id check in the handshake is what stops a bad hint from putting a node
+on the wrong chain, and node URLs are what stop it from putting the node in
+front of the wrong machine.
+
+Addresses learned from peers are bucketed by network — the first 16 bits for
+IPv4, 32 for IPv6 — and both eviction and selection work across buckets. Without
+that, anyone able to invent a few thousand addresses in one subnet could fill
+the address book and become every peer this node has.
+
+### Putting a validator on another machine
 
 ```sh
 # on every machine — the genesis file must be byte-identical everywhere,
@@ -295,7 +346,8 @@ scp node1:~/data/genesis.json ./data/genesis.json
 
 padi-chain run -datadir ./data -mine -validator <address> -password <pw> \
   -addr 0.0.0.0:30303 \
-  -peers <bootstrap-host>:30303 \
+  -nat extip:<this machine's public ip> \
+  -peers padi://<bootstrap node key>@<bootstrap host>:30303 \
   -rpc 127.0.0.1:8545
 ```
 

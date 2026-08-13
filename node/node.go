@@ -48,7 +48,13 @@ type Config struct {
 	MonitorAddr string
 	Bootstrap   []string
 	MaxPeers    int
-	NodeName    string
+	// NAT decides the address the node advertises to peers: "auto" to learn it
+	// from them, "extip:<ip>" to state it, "none" to advertise nothing.
+	NAT string
+	// DNSSeeds are domains whose TXT records list entry points, used only when
+	// no bootstrap peers are configured.
+	DNSSeeds []string
+	NodeName string
 
 	// Validator is the key this node seals blocks with. Without it the node
 	// follows the chain but never proposes.
@@ -418,6 +424,12 @@ func (n *Node) Start() error {
 		netConfig.Bootstrap = n.config.Bootstrap
 		netConfig.MaxPeers = n.config.MaxPeers
 		netConfig.NodeName = n.config.NodeName
+		nat, err := p2p.ParseNATMode(n.config.NAT)
+		if err != nil {
+			return err
+		}
+		netConfig.NAT = nat
+		netConfig.DNSSeeds = n.config.DNSSeeds
 
 		n.network = p2p.NewServer(netConfig, n, n.log)
 		if err := n.network.Start(); err != nil {
@@ -643,6 +655,14 @@ func (n *Node) P2PAddr() string {
 
 // RPCServer exposes the RPC server, for in-process calls.
 func (n *Node) RPCServer() *rpc.Server { return n.rpc }
+
+// NodeURL is the address other nodes should dial to reach this one.
+func (n *Node) NodeURL() string {
+	if n.network == nil {
+		return ""
+	}
+	return n.network.NodeURL()
+}
 
 // AddPeer connects to another node at runtime.
 func (n *Node) AddPeer(addr string) error {

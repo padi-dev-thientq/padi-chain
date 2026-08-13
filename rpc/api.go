@@ -27,6 +27,9 @@ type Backend interface {
 	ClientVersion() string
 	// Accounts lists the addresses the node holds keys for.
 	Accounts() []common.Address
+	// NodeURL is the address other nodes should dial to reach this one, or
+	// empty while the node does not know a routable address for itself.
+	NodeURL() string
 }
 
 // API implements the eth, net and web3 namespaces.
@@ -903,6 +906,7 @@ func (a *API) nodeInfo(params []json.RawMessage) (any, error) {
 		"validators":  len(bc.Validators()),
 		"quorum":      core.Quorum(len(bc.Validators())),
 		"peers":       a.backend.PeerCount(),
+		"nodeUrl":     a.backend.NodeURL(),
 		"txpool":      map[string]int{"pending": pending, "queued": queued},
 	}, nil
 }

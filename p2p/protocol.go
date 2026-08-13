@@ -85,8 +85,20 @@ type Status struct {
 	Genesis    common.Hash
 	Head       common.Hash
 	HeadNumber uint64
+	// ListenPort is the port this node accepts connections on, which is not
+	// the port a dialled connection appears to come from.
 	ListenPort uint64
 	NodeName   string
+	// Observed is the address the sender sees this connection coming from.
+	//
+	// A node cannot work out its own public address by looking at its socket:
+	// bound to 0.0.0.0 it learns nothing, and behind NAT the address it would
+	// find is the private one. The only party that knows is whoever is on the
+	// other end, so each side tells the other what it sees. Ethereum gets this
+	// from the endpoint proof in its discovery PONG and Bitcoin from the
+	// version message's addr_you; this is the same trick in the handshake that
+	// already exists here.
+	Observed string
 }
 
 // GetBlocks requests a run of blocks by height.
