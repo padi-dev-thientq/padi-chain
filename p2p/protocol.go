@@ -153,6 +153,11 @@ const MaxAttestationsPerMessage = 512
 // MaxBlocksPerRequest bounds how many blocks one request may ask for.
 const MaxBlocksPerRequest = 128
 
+// maxBackfillStep bounds how far back one ancestor search reaches. A node that
+// has diverged by more than this is better served by a snapshot than by
+// replaying the difference block by block.
+const maxBackfillStep = 4096
+
 // writeMessage frames a message: one code byte, a four-byte big-endian length,
 // then the payload.
 func writeMessage(w io.Writer, code MessageCode, payload []byte) error {

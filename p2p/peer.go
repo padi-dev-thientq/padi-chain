@@ -28,6 +28,13 @@ type Peer struct {
 	head       common.Hash
 	headNumber uint64
 
+	// backfillStep is how far back the next ancestor search reaches when a
+	// block from this peer will not connect. It doubles on each failure so a
+	// deep divergence is found in a logarithmic number of round trips, and
+	// resets as soon as a block imports.
+	backfillMu   sync.Mutex
+	backfillStep uint64
+
 	// seen remembers what this peer already knows, so gossip is not echoed
 	// back to its source.
 	seen *seenCache
@@ -232,10 +239,16 @@ func (p *Peer) run() {
 // isBenignBlockError reports whether a rejected block reflects normal
 // out-of-order delivery rather than misbehaviour.
 func isBenignBlockError(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "already known") ||
-		strings.Contains(msg, "parent block is unknown") ||
-		strings.Contains(msg, "snapshot sync in progress")
+	return isMissingParent(err) ||
+		strings.Contains(err.Error(), "already known") ||
+		strings.Contains(err.Error(), "snapshot sync in progress")
+}
+
+// isMissingParent reports whether a block was refused only because its parent
+// has not arrived. It is matched on the message rather than the sentinel to
+// keep this package from depending on the chain.
+func isMissingParent(err error) bool {
+	return strings.Contains(err.Error(), "parent block is unknown")
 }
 
 func (p *Peer) handle(code MessageCode, payload []byte) error {
@@ -266,6 +279,7 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 		if err != nil {
 			return err
 		}
+		imported := false
 		for _, block := range decoded {
 			p.seen.add(block.Hash())
 			p.setHead(block.Hash(), block.NumberU64())
@@ -278,14 +292,33 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 					p.server.penalise(p.id, penaltyInvalidBlock, "sent an invalid block")
 					return err
 				}
+				if isMissingParent(err) {
+					// The gap may be a simple lag, or it may be that this
+					// node is on a branch that left the peer's chain some
+					// blocks back. Both look the same from here, so ask for
+					// the run before this block; if that does not connect
+					// either, the window widens until it reaches whatever
+					// height the two chains last agreed on.
+					p.server.backfill(p, block.NumberU64())
+				}
 				p.server.log.Debug("p2p block not applied", "peer", p.ID(), "number", block.NumberU64(), "err", err)
 				continue
 			}
+			imported = true
+			p.resetBackfill()
 			// Relay only blocks that were new to us, which keeps gossip from
 			// looping.
 			if p.server.seen.add(block.Hash()) {
 				p.server.BroadcastBlock(block)
 			}
+		}
+		// Ask for the next stretch while this peer is still ahead. One request
+		// at connection time is not enough: an ancestor search delivers the
+		// block the two chains last agreed on and nothing above it, so without
+		// this the node would stop one block into a recovery it had just
+		// worked out how to make.
+		if imported {
+			go p.server.syncFrom(p)
 		}
 		return nil
 
@@ -466,4 +499,23 @@ func (p *Peer) handle(code MessageCode, payload []byte) error {
 		// breaking older nodes.
 		return nil
 	}
+}
+
+// nextBackfillStep widens the ancestor search window and returns it.
+func (p *Peer) nextBackfillStep() uint64 {
+	p.backfillMu.Lock()
+	defer p.backfillMu.Unlock()
+	if p.backfillStep == 0 {
+		p.backfillStep = 1
+	} else if p.backfillStep < maxBackfillStep {
+		p.backfillStep *= 2
+	}
+	return p.backfillStep
+}
+
+// resetBackfill narrows the search again once blocks are connecting.
+func (p *Peer) resetBackfill() {
+	p.backfillMu.Lock()
+	p.backfillStep = 0
+	p.backfillMu.Unlock()
 }

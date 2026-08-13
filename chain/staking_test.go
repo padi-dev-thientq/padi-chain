@@ -6,9 +6,11 @@ import (
 
 	"padi-chain/chain"
 	"padi-chain/common"
+	"padi-chain/consensus"
 	"padi-chain/core"
 	"padi-chain/crypto/bls12381"
 	"padi-chain/crypto/secp256k1"
+	"padi-chain/db"
 	"padi-chain/miner"
 	"padi-chain/processor"
 	"padi-chain/rlp"
@@ -461,4 +463,59 @@ func TestGenesisValidatorsHaveAttestationKeys(t *testing.T) {
 	if len(blsKeys) != len(addresses) {
 		t.Fatalf("%d keys for %d validators: the bitfield would be meaningless", len(blsKeys), len(addresses))
 	}
+}
+
+func TestValidatorAddressesAndKeysShareAnOrdering(t *testing.T) {
+	// The consensus engine sorts validators for its round-robin fallback while
+	// the registry walks them in index order. An attestation's bitfield indexes
+	// into one list and is verified against the other, so the two must agree —
+	// and they only visibly disagree when the genesis order is not already
+	// sorted, which is why this test deliberately supplies one that is not.
+	keys, addrs := testKeys(t, 4)
+
+	unsorted := []common.Address{addrs[3], addrs[1], addrs[0], addrs[2]}
+	genesis := chain.DefaultGenesis(chainID, unsorted)
+	genesis.BlockPeriod = 1
+	for _, addr := range addrs {
+		genesis.Alloc[addr] = chain.GenesisAccount{Balance: new(big.Int).Lsh(big.NewInt(1), 80)}
+	}
+	engine, err := consensus.NewPoA(genesis.Validators, genesis.BlockPeriod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bc, err := chain.NewBlockChain(db.NewMemoryDB(), genesis, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	addresses, err := bc.ValidatorsAt(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blsKeys, err := bc.BLSKeysAt(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(addresses) != len(blsKeys) {
+		t.Fatalf("%d addresses but %d keys", len(addresses), len(blsKeys))
+	}
+
+	// Position by position, the key must be the one that address registered.
+	registry, err := bc.StakingRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, addr := range addresses {
+		v, err := registry.ByAddress(addr)
+		if err != nil {
+			t.Fatalf("validator %d (%s) is not registered", i, addr)
+		}
+		if blsKeys[i] == nil {
+			t.Fatalf("validator %d has no attestation key", i)
+		}
+		if string(blsKeys[i].Bytes()) != string(v.BLSPublicKey) {
+			t.Fatalf("at index %d the address is %s but the key belongs to someone else", i, addr)
+		}
+	}
+	_ = keys
 }

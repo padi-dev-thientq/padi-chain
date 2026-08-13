@@ -562,8 +562,25 @@ func (bc *BlockChain) ValidatorsAt(blockNumber uint64) ([]common.Address, error)
 	return set, nil
 }
 
+// genesisValidators reads the first epoch's set from the registry.
+//
+// It must come from the registry rather than the engine, even though the engine
+// holds the same validators: the engine sorts them for its round-robin
+// fallback, while the registry walks them in index order. An attestation's
+// bitfield indexes into whichever list a node derived, so the addresses and the
+// attestation keys have to come from the same walk — otherwise index i names
+// one validator in one list and a different one in the other, every aggregate
+// fails to verify, and the chain produces blocks that never finalize.
 func (bc *BlockChain) genesisValidators() []common.Address {
-	return bc.engine.Validators()
+	statedb, err := bc.StateAt(bc.genesis.StateRoot())
+	if err != nil {
+		return bc.engine.Validators()
+	}
+	set, err := staking.NewRegistry(statedb).ActiveAddressesAt(0)
+	if err != nil || len(set) == 0 {
+		return bc.engine.Validators()
+	}
+	return set
 }
 
 // ProposerAtHeight returns the validator entitled to propose a block, drawn by

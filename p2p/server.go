@@ -291,6 +291,32 @@ func (s *Server) syncFrom(peer *Peer) {
 	}
 }
 
+// backfill asks a peer for the blocks before one that would not connect.
+//
+// A node whose head sits on a branch the peer abandoned cannot be helped by
+// asking for blocks above its own height: every one of them has a parent it
+// does not have, and it stays stuck on its own fork for as long as it lives.
+// Walking backwards from the block that failed reaches the height where the two
+// chains last agreed, and from there the peer's branch imports normally and the
+// usual fork choice decides which one wins.
+func (s *Server) backfill(peer *Peer, number uint64) {
+	if number <= 1 {
+		return
+	}
+	step := peer.nextBackfillStep()
+	from := uint64(1)
+	if number > step {
+		from = number - step
+	}
+	count := number - from
+	if count > MaxBlocksPerRequest {
+		count = MaxBlocksPerRequest
+		from = number - count
+	}
+	s.log.Debug("searching for a common ancestor", "peer", peer.ID(), "from", from, "count", count)
+	peer.Send(MsgGetBlocks, &GetBlocks{From: from, Count: count})
+}
+
 // penalise deducts a peer's score and disconnects it if it runs out.
 func (s *Server) penalise(id NodeID, amount int, reason string) {
 	if !s.scores.penalise(id, amount) {

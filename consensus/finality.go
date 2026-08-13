@@ -213,7 +213,9 @@ func (p *AttestationPool) Certificate(number uint64, blockHash common.Hash) *cor
 		if err != nil {
 			return nil
 		}
-		if _, err := qc.Verify(p.chainID, p.keys); err == nil {
+		// The threshold is already satisfied by the count above; what is
+		// being checked here is that the signatures are real.
+		if _, err := qc.VerifySignature(p.chainID, p.keys); err == nil {
 			return qc
 		}
 		// Something in there does not verify. Find it the slow way, drop it,

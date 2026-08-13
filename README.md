@@ -271,6 +271,54 @@ breaking the mathematics.
 
 `padi_validatorInfo` reports where a validator sits in its lifecycle.
 
+## Running a cluster
+
+There is no hash rate to add to. Blocks are produced by whichever validator's
+turn it is, on a fixed period, and a second machine does not make that turn come
+faster. What more machines buy is the thing proof of work buys with hash rate but
+proof of stake buys with independence: a chain that keeps finalizing when some of
+it goes away.
+
+Finality needs signatures from more than two thirds of the stake, so a set of `n`
+validators tolerates `(n-1)/3` of them being lost at once. Four validators
+survive one failure; one validator survives nothing, and a single-node devnet has
+no fault tolerance at all — it just does not notice, because the one node is
+always in the quorum.
+
+To put a validator on another machine:
+
+```sh
+# on every machine — the genesis file must be byte-identical everywhere,
+# so copy it, do not re-run init
+padi-chain account new -datadir ./data -password <pw>
+scp node1:~/data/genesis.json ./data/genesis.json
+
+padi-chain run -datadir ./data -mine -validator <address> -password <pw> \
+  -addr 0.0.0.0:30303 \
+  -peers <bootstrap-host>:30303 \
+  -rpc 127.0.0.1:8545
+```
+
+`-addr` has to be an interface the other machines can actually reach, and port
+30303 has to be open between them; `-rpc` should stay on loopback unless the
+endpoint is meant to be public, since it is unauthenticated. Peers only need one
+reachable bootstrap address each — peer exchange finds the rest.
+
+A node that has drifted onto its own branch — because it was mining before it
+found the network, or because it was partitioned for a while — recovers by
+searching backwards for the height at which its chain and its peer's last
+agreed, then replaying forward from there. Asking only for blocks above its own
+head would never work: every one of them descends from a block it does not have.
+
+Two things bite in practice. Validators must be in the genesis set (or deposit
+their stake afterwards and wait out the activation queue) before their
+attestations count for anything; and clocks must agree, because a header more
+than 15 seconds ahead of a node's own clock is refused, so a machine with a
+drifting clock silently has its blocks rejected by everyone else. Run NTP.
+
+`make cluster` starts four validators locally on one machine. That is a
+correctness test of the quorum path, not a performance one.
+
 ## Scope
 
 [ROADMAP.md](ROADMAP.md) tracks the path to production. Eight of its nine phases

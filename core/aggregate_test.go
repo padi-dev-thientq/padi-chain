@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"math/big"
 	"testing"
 
@@ -181,7 +182,9 @@ func TestDuplicateSignatureIsIgnored(t *testing.T) {
 	if agg.Count() != 2 {
 		t.Fatalf("count = %d, want 2", agg.Count())
 	}
-	if _, err := agg.Verify(aggChainID, publics); err != nil {
+	// Two of four is short of a quorum, which is not what is under test here:
+	// the question is whether the aggregate signature still stands.
+	if _, err := agg.VerifySignature(aggChainID, publics); err != nil {
 		t.Fatalf("a duplicate submission corrupted the aggregate: %v", err)
 	}
 }
@@ -227,7 +230,7 @@ func TestOverlappingMergeIsRefused(t *testing.T) {
 	if err := a.Merge(b); err == nil {
 		t.Fatal("overlapping aggregates were merged")
 	}
-	if _, err := a.Verify(aggChainID, publics); err != nil {
+	if _, err := a.VerifySignature(aggChainID, publics); err != nil {
 		t.Fatalf("the refused merge corrupted the original: %v", err)
 	}
 }
@@ -284,4 +287,29 @@ func TestAggregateSizeIsIndependentOfSignerCount(t *testing.T) {
 		t.Fatalf("certificate grew by %d bytes from 4 to 256 signers", growth)
 	}
 	t.Logf("certificate sizes: %v bytes", sizes)
+}
+
+// TestAggregateNeedsAQuorum guards the threshold itself. A certificate can be
+// perfectly signed and still name too few validators to mean anything, and it
+// is the verification path — not each of its callers — that has to say so.
+func TestAggregateNeedsAQuorum(t *testing.T) {
+	secrets, publics := blsKeys(t, 4)
+	hash := common.Keccak256([]byte("a block awaiting a quorum"))
+
+	agg := NewAggregate(11, hash, len(publics))
+	for i := 0; i < 2; i++ {
+		agg.Add(i, SignAttestationBLS(secrets[i], aggChainID, 11, hash))
+	}
+	// The signature is genuine; two of four is simply not enough.
+	if _, err := agg.VerifySignature(aggChainID, publics); err != nil {
+		t.Fatalf("the aggregate signature should be valid: %v", err)
+	}
+	if _, err := agg.Verify(aggChainID, publics); !errors.Is(err, ErrQuorumNotMet) {
+		t.Fatalf("a two-of-four certificate verified: %v", err)
+	}
+
+	agg.Add(2, SignAttestationBLS(secrets[2], aggChainID, 11, hash))
+	if _, err := agg.Verify(aggChainID, publics); err != nil {
+		t.Fatalf("three of four is a quorum: %v", err)
+	}
 }

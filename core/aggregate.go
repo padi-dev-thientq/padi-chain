@@ -269,14 +269,33 @@ func (a *AggregateAttestation) IsEmpty() bool {
 	return a == nil || len(a.Signature) == 0 || a.Signers.Count() == 0
 }
 
-// Verify checks the aggregate against the ordered validator public keys for its
-// height, and returns the indices that signed.
+// Verify checks that the aggregate is signed by a quorum of the validator set,
+// and returns the indices that signed.
 //
-// The keys must be in the same order every node derives, since the bitfield
-// means nothing otherwise. Each key is assumed to have had its proof of
-// possession checked at registration; without that, a rogue key could forge an
-// aggregate nobody agreed to.
+// The threshold is enforced here rather than left to the caller. Every use of a
+// certificate in consensus depends on it — finalizing a block, accepting a
+// header's justification, adopting a snapshot — and a certificate that verifies
+// cryptographically but carries one signature out of a hundred is exactly the
+// thing those paths must refuse. Making the safe check the default one means a
+// new call site cannot forget it.
+//
+// The keys must be in the order every node derives, since the bitfield means
+// nothing otherwise, and each must have had its proof of possession checked at
+// registration.
 func (a *AggregateAttestation) Verify(chainID *big.Int, keys []*bls12381.PublicKey) ([]int, error) {
+	indices, err := a.VerifySignature(chainID, keys)
+	if err != nil {
+		return nil, err
+	}
+	if need := Quorum(len(keys)); len(indices) < need {
+		return nil, fmt.Errorf("%w: %d of %d validators, need %d", ErrQuorumNotMet, len(indices), len(keys), need)
+	}
+	return indices, nil
+}
+
+// VerifySignature checks the aggregate signature alone, without requiring a
+// quorum. It is for assembling a certificate, not for acting on one.
+func (a *AggregateAttestation) VerifySignature(chainID *big.Int, keys []*bls12381.PublicKey) ([]int, error) {
 	if a.IsEmpty() {
 		return nil, ErrNoSigners
 	}

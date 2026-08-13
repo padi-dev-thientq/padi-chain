@@ -509,6 +509,9 @@ func (n *Node) mineLoop() {
 }
 
 func (n *Node) tryPropose() {
+	if !n.readyToPropose() {
+		return
+	}
 	head := n.chain.CurrentBlock()
 	next := head.NumberU64() + 1
 
@@ -546,6 +549,28 @@ func (n *Node) tryPropose() {
 	// The proposer attests to its own block like any other validator; in a
 	// single-validator network that vote alone is the quorum.
 	n.attest(result.Block)
+}
+
+// readyToPropose reports whether this node should be sealing yet.
+//
+// A validator configured with bootstrap peers must reach at least one of them
+// before it proposes anything. Dialling takes a moment, and a validator that
+// seals during that moment builds on genesis while the rest of the network is
+// already past it — four validators starting together each produce their own
+// block one, and the network begins life split four ways over a race nobody
+// observes. Waiting costs a few slots once, at startup.
+//
+// A node with no bootstrap peers configured is the first node of a network and
+// has nobody to wait for.
+func (n *Node) readyToPropose() bool {
+	if len(n.config.Bootstrap) == 0 || n.network == nil {
+		return true
+	}
+	if n.PeerCount() > 0 {
+		return true
+	}
+	n.log.Debug("not proposing yet: no peers connected")
+	return false
 }
 
 // Stop shuts the node down and closes its store.

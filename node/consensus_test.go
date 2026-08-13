@@ -7,9 +7,12 @@ import (
 
 	"padi-chain/chain"
 	"padi-chain/common"
+	"padi-chain/consensus"
 	"padi-chain/core"
 	"padi-chain/crypto/secp256k1"
+	"padi-chain/db"
 	"padi-chain/keystore"
+	"padi-chain/miner"
 	"padi-chain/node"
 )
 
@@ -248,4 +251,133 @@ func TestTransactionsFinalizeAcrossCluster(t *testing.T) {
 			t.Fatalf("node %d has balance %s for the recipient, want 7777", i, got)
 		}
 	}
+}
+
+// TestDivergedNodesConvergeOnceConnected covers the case a cluster started all
+// at once used to hide: two nodes that each hold a branch the other has never
+// seen.
+//
+// The node that is behind cannot be helped by asking for blocks above its own
+// height, because every one of them descends from a block it never had. Unless
+// it searches backwards for the height where the two chains last agreed, it
+// stays on its own branch for good — connected to the network, exchanging
+// messages, and permanently unable to import anything.
+func TestDivergedNodesConvergeOnceConnected(t *testing.T) {
+	if testing.Short() {
+		t.Skip("cluster tests are slow")
+	}
+	keys, addrs := newValidatorSet(t, 2)
+	genesis := forkTestGenesis(addrs)
+
+	// Two branches from the same genesis, built offline so the divergence is
+	// exact rather than a matter of timing.
+	// The branches are made to differ by content rather than by timing, so the
+	// divergence is the same on every run.
+	long := buildBranch(t, genesis, keys, 6, markerTx(t, keys[0], 7777))
+	short := buildBranch(t, genesis, keys, 2, markerTx(t, keys[0], 8888))
+	if long[0].Hash() == short[0].Hash() {
+		t.Fatal("the two branches were supposed to differ from block one")
+	}
+
+	nodes := startIsolated(t, keys, genesis)
+	seed(t, nodes[0], long)
+	seed(t, nodes[1], short)
+
+	if err := nodes[1].AddPeer(nodes[0].P2PAddr()); err != nil {
+		t.Fatal(err)
+	}
+
+	waitFor(t, 60*time.Second, "the branch that was behind to be replaced", func() bool {
+		return nodes[1].Chain().CurrentBlock().Hash() == long[len(long)-1].Hash()
+	})
+}
+
+func forkTestGenesis(addrs []common.Address) *chain.Genesis {
+	genesis := chain.DefaultGenesis(testChainID, addrs)
+	genesis.BlockPeriod = 1
+	genesis.Timestamp = uint64(time.Now().Add(-time.Hour).Unix())
+	balance := new(big.Int).Mul(big.NewInt(1000), big.NewInt(1e18))
+	for _, addr := range addrs {
+		genesis.Alloc[addr] = chain.GenesisAccount{Balance: balance}
+	}
+	return genesis
+}
+
+// markerTx is a transfer whose only job is to make one branch differ from
+// another.
+func markerTx(t *testing.T, key *secp256k1.PrivateKey, value int64) *core.Transaction {
+	t.Helper()
+	recipient := common.MustHexToAddress("0x8888888888888888888888888888888888888888")
+	tx, err := core.NewSigner(testChainID).SignTx(core.NewTx(&core.DynamicFeeTx{
+		Nonce:     0,
+		GasTipCap: big.NewInt(1_000_000_000),
+		GasFeeCap: big.NewInt(20_000_000_000),
+		Gas:       21000,
+		To:        &recipient,
+		Value:     big.NewInt(value),
+	}), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tx
+}
+
+// buildBranch mines n blocks on a throwaway chain, putting the given
+// transaction in the first, and returns them.
+func buildBranch(t *testing.T, genesis *chain.Genesis, keys []*secp256k1.PrivateKey, n int, first *core.Transaction) core.Blocks {
+	t.Helper()
+	engine, err := consensus.NewPoA(genesis.Validators, genesis.BlockPeriod)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bc, err := chain.NewBlockChain(db.NewMemoryDB(), genesis, engine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var blocks core.Blocks
+	for i := 0; i < n; i++ {
+		next := bc.CurrentBlock().NumberU64() + 1
+		proposer, _ := engine.ProposerAt(next)
+		var key *secp256k1.PrivateKey
+		for j, addr := range genesis.Validators {
+			if addr == proposer {
+				key = keys[j]
+			}
+		}
+		var txs core.Transactions
+		if i == 0 {
+			txs = core.Transactions{first}
+		}
+		result, err := miner.NewBuilder(bc, engine, key).Commit(txs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		blocks = append(blocks, result.Block)
+	}
+	return blocks
+}
+
+func seed(t *testing.T, n *node.Node, blocks core.Blocks) {
+	t.Helper()
+	if _, err := n.Chain().InsertChain(blocks); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// startIsolated starts nodes that share a genesis but not a network, and that
+// do not mine, so each one holds exactly the branch it is given.
+func startIsolated(t *testing.T, keys []*secp256k1.PrivateKey, genesis *chain.Genesis) []*node.Node {
+	t.Helper()
+	var nodes []*node.Node
+	for i, key := range keys {
+		nodes = append(nodes, startNode(t, &node.Config{
+			DataDir:    t.TempDir(),
+			Genesis:    genesis,
+			Validator:  key,
+			ListenAddr: "127.0.0.1:0",
+			NodeName:   string(rune('a' + i)),
+			Logger:     quietLogger(),
+		}))
+	}
+	return nodes
 }

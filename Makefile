@@ -12,6 +12,7 @@ CHAINID     ?= 1337
 PERIOD      ?= 2
 GASLIMIT    ?= 30000000
 PASSWORD    ?= devpass
+CLUSTER     ?= ./cluster
 
 RPC_ADDR    ?= 127.0.0.1:8545
 P2P_ADDR    ?= 0.0.0.0:30303
@@ -231,6 +232,43 @@ devnet: ## Wipe, create and start a fresh single-node chain
 	@$(MAKE) --no-print-directory init
 	@$(MAKE) --no-print-directory start
 	@$(MAKE) --no-print-directory status
+
+.PHONY: cluster
+cluster: build ## Start a four-validator cluster locally (ports 8541-8544)
+	@$(MAKE) --no-print-directory cluster-stop 2>/dev/null || true
+	@rm -rf $(CLUSTER) && mkdir -p $(CLUSTER)
+	@for i in 1 2 3 4; do \
+		./$(BINARY) account new -datadir $(CLUSTER)/n$$i -password $(PASSWORD) >/dev/null; \
+	done
+	@vals=$$(for i in 1 2 3 4; do ./$(BINARY) account list -datadir $(CLUSTER)/n$$i | head -1; done | paste -sd,); \
+	./$(BINARY) init -datadir $(CLUSTER)/n1 -chainid $(CHAINID) -period 2 -validators $$vals >/dev/null
+	@for i in 2 3 4; do cp $(CLUSTER)/n1/genesis.json $(CLUSTER)/n$$i/genesis.json; done
+	@for i in 1 2 3 4; do \
+		v=$$(./$(BINARY) account list -datadir $(CLUSTER)/n$$i | head -1); \
+		p=""; [ $$i -gt 1 ] && p="-peers 127.0.0.1:30301"; \
+		./$(BINARY) run -datadir $(CLUSTER)/n$$i -mine -validator $$v -password $(PASSWORD) \
+			-rpc 127.0.0.1:854$$i -addr 127.0.0.1:3030$$i -monitor 127.0.0.1:606$$i $$p \
+			> $(CLUSTER)/n$$i.log 2>&1 & \
+	done
+	@printf 'waiting for the first finalized block'
+	@until ./$(BINARY) status -rpc http://127.0.0.1:8541 2>/dev/null \
+		| grep -qE 'final: #[1-9]'; do printf '.'; sleep 2; done
+	@echo
+	@$(MAKE) --no-print-directory cluster-status
+
+.PHONY: cluster-status
+cluster-status: ## Show head and finalized height for each cluster node
+	@for i in 1 2 3 4; do \
+		printf 'node%s  ' $$i; \
+		./$(BINARY) status -rpc http://127.0.0.1:854$$i 2>/dev/null \
+			| grep -E 'head:|final:|peers:' | tr -s ' ' | tr '\n' ' '; \
+		echo; \
+	done
+
+.PHONY: cluster-stop
+cluster-stop: ## Stop the local cluster and delete its data
+	@pkill -x $(BINARY) 2>/dev/null || true
+	@rm -rf $(CLUSTER)
 
 .PHONY: clean-chain
 clean-chain: ## Delete the chain data, keeping the binary
