@@ -22,6 +22,8 @@ var (
 	ErrNotActive       = errors.New("staking: validator is not active")
 	ErrNotWithdrawable = errors.New("staking: validator's stake is not withdrawable yet")
 	ErrAlreadySlashed  = errors.New("staking: validator is already slashed")
+	ErrBadBLSKey       = errors.New("staking: invalid attestation key")
+	ErrBadPossession   = errors.New("staking: invalid proof of possession")
 )
 
 // Status is where a validator sits in its lifecycle.
@@ -67,6 +69,10 @@ type Validator struct {
 	Index             uint64
 	Address           common.Address
 	WithdrawalAddress common.Address
+	// BLSPublicKey is the key this validator attests with. It is separate from
+	// the address key: attestations are aggregated, which needs a pairing-based
+	// scheme, while transactions stay on the curve the EVM understands.
+	BLSPublicKey      []byte
 	Balance           *big.Int
 	EffectiveBalance  *big.Int
 	Status            Status
@@ -205,7 +211,29 @@ func (r *Registry) Get(index uint64) (*Validator, error) {
 	v.WithdrawalAddress = common.BytesToAddress(r.state.GetState(StakingAddress, slotFor("staking/withdrawal", index)).Bytes())
 	v.Balance = r.state.GetState(StakingAddress, slotFor("staking/balance", index)).Big()
 	v.EffectiveBalance = computeEffectiveBalance(v.Balance)
+
+	// A 48-byte compressed key spans two slots.
+	high := r.state.GetState(StakingAddress, slotFor("staking/bls-hi", index))
+	low := r.state.GetState(StakingAddress, slotFor("staking/bls-lo", index))
+	key := make([]byte, 0, BLSPublicKeyLength)
+	key = append(key, high[:]...)
+	key = append(key, low[16:]...)
+	if !isZeroBytes(key) {
+		v.BLSPublicKey = key
+	}
 	return v, nil
+}
+
+// BLSPublicKeyLength is the length of a compressed BLS12-381 public key.
+const BLSPublicKeyLength = 48
+
+func isZeroBytes(b []byte) bool {
+	for _, c := range b {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // ByAddress loads a validator by its signing address.
@@ -223,6 +251,14 @@ func (r *Registry) Put(v *Validator) {
 	r.state.SetState(StakingAddress, slotFor("staking/addr", v.Index), v.Address.Hash())
 	r.state.SetState(StakingAddress, slotFor("staking/withdrawal", v.Index), v.WithdrawalAddress.Hash())
 	r.state.SetState(StakingAddress, slotFor("staking/balance", v.Index), common.BigToHash(v.Balance))
+
+	var high, low common.Hash
+	if len(v.BLSPublicKey) == BLSPublicKeyLength {
+		copy(high[:], v.BLSPublicKey[:32])
+		copy(low[16:], v.BLSPublicKey[32:])
+	}
+	r.state.SetState(StakingAddress, slotFor("staking/bls-hi", v.Index), high)
+	r.state.SetState(StakingAddress, slotFor("staking/bls-lo", v.Index), low)
 }
 
 // Append adds a new validator and returns its index.
@@ -263,6 +299,24 @@ func (r *Registry) ActiveAt(epoch uint64) ([]*Validator, error) {
 		}
 	}
 	return active, nil
+}
+
+// ActiveBLSKeysAt returns the attestation keys of the active set, in the same
+// order as ActiveAddressesAt.
+//
+// The order is what an aggregate's bitfield indexes into, so the two must be
+// derived the same way on every node — which they are, because both walk the
+// registry in index order.
+func (r *Registry) ActiveBLSKeysAt(epoch uint64) ([][]byte, error) {
+	active, err := r.ActiveAt(epoch)
+	if err != nil {
+		return nil, err
+	}
+	out := make([][]byte, 0, len(active))
+	for _, v := range active {
+		out = append(out, v.BLSPublicKey)
+	}
+	return out, nil
 }
 
 // ActiveAddressesAt returns the signing addresses of the active set.

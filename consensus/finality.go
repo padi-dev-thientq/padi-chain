@@ -8,13 +8,14 @@ import (
 
 	"layer1/common"
 	"layer1/core"
-	"layer1/crypto/secp256k1"
+	"layer1/crypto/bls12381"
 )
 
 var (
 	ErrConflictsWithFinal   = errors.New("consensus: block conflicts with finalized history")
 	ErrJustificationInvalid = errors.New("consensus: header justification is not a valid quorum certificate")
 	ErrEquivocation         = errors.New("consensus: validator signed conflicting attestations")
+	ErrUnknownIndex         = errors.New("consensus: attestation names a validator outside the set")
 )
 
 // AttestationPool collects votes until they form a quorum, and notices when a
@@ -22,48 +23,54 @@ var (
 //
 // Equivocation is the only way a finalized block can be reversed, so the pool
 // treats detecting it as a first-class job rather than a side effect.
+//
+// Votes are BLS signatures indexed by position in the ordered validator set,
+// which is what lets a quorum collapse into a single aggregate signature.
 type AttestationPool struct {
 	mu sync.RWMutex
 
-	chainID    *big.Int
-	validators map[common.Address]struct{}
-	size       int
+	chainID *big.Int
+	// keys is the ordered attestation key of each validator; a vote's index
+	// selects one. The order has to match what every other node derives.
+	keys []*bls12381.PublicKey
+	// addresses is the same set by address, for naming a slashed validator.
+	addresses []common.Address
 
-	// votes maps height -> block hash -> validator -> attestation.
-	votes map[uint64]map[common.Hash]map[common.Address]*core.Attestation
-	// byValidator maps height -> validator -> the block it voted for, which is
-	// what makes a second, different vote detectable in constant time.
-	byValidator map[uint64]map[common.Address]*core.Attestation
+	// votes maps height -> block hash -> validator index -> signature.
+	votes map[uint64]map[common.Hash]map[int][]byte
+	// byIndex maps height -> validator index -> the vote it cast, which makes
+	// a second, different vote detectable in constant time.
+	byIndex map[uint64]map[int]*core.Attestation
 
 	evidence []*core.Equivocation
 
-	// finalized is the highest height a quorum has been reached at.
 	finalized uint64
-	// retain bounds how much history the pool keeps.
-	retain uint64
+	retain    uint64
 }
 
 // NewAttestationPool creates a pool for a validator set.
-func NewAttestationPool(chainID *big.Int, validators []common.Address) *AttestationPool {
-	set := make(map[common.Address]struct{}, len(validators))
-	for _, v := range validators {
-		set[v] = struct{}{}
+func NewAttestationPool(chainID *big.Int, addresses []common.Address, keys [][]byte) *AttestationPool {
+	p := &AttestationPool{
+		chainID: new(big.Int).Set(chainID),
+		votes:   make(map[uint64]map[common.Hash]map[int][]byte),
+		byIndex: make(map[uint64]map[int]*core.Attestation),
+		retain:  256,
 	}
-	return &AttestationPool{
-		chainID:     new(big.Int).Set(chainID),
-		validators:  set,
-		size:        len(validators),
-		votes:       make(map[uint64]map[common.Hash]map[common.Address]*core.Attestation),
-		byValidator: make(map[uint64]map[common.Address]*core.Attestation),
-		retain:      256,
-	}
+	p.setValidators(addresses, keys)
+	return p
 }
 
-// Quorum returns the number of votes a certificate needs.
-func (p *AttestationPool) Quorum() int {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return core.Quorum(p.size)
+func (p *AttestationPool) setValidators(addresses []common.Address, keys [][]byte) {
+	p.addresses = append([]common.Address(nil), addresses...)
+	p.keys = make([]*bls12381.PublicKey, len(keys))
+	for i, raw := range keys {
+		if len(raw) == 0 {
+			continue // a validator with no registered key cannot attest
+		}
+		if key, err := bls12381.PublicKeyFromBytes(raw); err == nil {
+			p.keys[i] = key
+		}
+	}
 }
 
 // UpdateValidators replaces the set the pool accepts votes from.
@@ -73,83 +80,109 @@ func (p *AttestationPool) Quorum() int {
 // computing a quorum for a set that no longer exists. Votes already collected
 // are kept: they were valid when cast, and a validator that has since left was
 // still accountable for the height it voted at.
-func (p *AttestationPool) UpdateValidators(validators []common.Address) {
+func (p *AttestationPool) UpdateValidators(addresses []common.Address, keys [][]byte) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	p.setValidators(addresses, keys)
+}
 
-	set := make(map[common.Address]struct{}, len(validators))
-	for _, v := range validators {
-		set[v] = struct{}{}
-	}
-	p.validators = set
-	p.size = len(validators)
+// Size returns how many validators the pool is tracking.
+func (p *AttestationPool) Size() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return len(p.keys)
+}
+
+// Quorum returns the number of votes a certificate needs.
+func (p *AttestationPool) Quorum() int {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return core.Quorum(len(p.keys))
 }
 
 // Validators returns the set the pool currently accepts votes from.
 func (p *AttestationPool) Validators() []common.Address {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	out := make([]common.Address, 0, len(p.validators))
-	for v := range p.validators {
-		out = append(out, v)
-	}
-	return out
+	return append([]common.Address(nil), p.addresses...)
 }
 
-// Add records an attestation and reports whether it was new.
-//
-// An attestation that conflicts with one already seen from the same validator
-// is recorded as evidence and rejected: it must not be counted toward any
-// quorum, or a single equivocating validator could be counted twice.
-func (p *AttestationPool) Add(attestation *core.Attestation) (bool, error) {
-	attester, err := attestation.Attester(p.chainID)
-	if err != nil {
-		return false, err
+// IndexOf returns a validator's position in the ordered set.
+func (p *AttestationPool) IndexOf(addr common.Address) (int, bool) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	for i, candidate := range p.addresses {
+		if candidate == addr {
+			return i, true
+		}
 	}
+	return 0, false
+}
 
+// Add records a vote and reports whether it was new.
+//
+// A vote that conflicts with one already seen from the same validator is
+// recorded as evidence and rejected: it must not count toward any quorum, or a
+// single equivocating validator could be counted twice.
+func (p *AttestationPool) Add(attestation *core.Attestation) (bool, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if _, ok := p.validators[attester]; !ok {
-		return false, fmt.Errorf("%w: %s", core.ErrUnknownAttester, attester)
+	index := int(attestation.Index)
+	if index < 0 || index >= len(p.keys) {
+		return false, fmt.Errorf("%w: index %d of %d", ErrUnknownIndex, index, len(p.keys))
+	}
+	key := p.keys[index]
+	if key == nil {
+		return false, fmt.Errorf("%w: validator %d has no attestation key", ErrUnknownIndex, index)
 	}
 	// Votes for already-finalized history change nothing.
-	if attestation.Number <= p.finalized && p.finalized > 0 {
+	if p.finalized > 0 && attestation.Number <= p.finalized {
 		return false, nil
 	}
 
-	byValidator := p.byValidator[attestation.Number]
-	if byValidator == nil {
-		byValidator = make(map[common.Address]*core.Attestation)
-		p.byValidator[attestation.Number] = byValidator
+	byIndex := p.byIndex[attestation.Number]
+	if byIndex == nil {
+		byIndex = make(map[int]*core.Attestation)
+		p.byIndex[attestation.Number] = byIndex
 	}
 
-	if previous, ok := byValidator[attester]; ok {
+	if previous, ok := byIndex[index]; ok {
 		if previous.BlockHash == attestation.BlockHash {
 			return false, nil // the same vote again
 		}
-		proof, err := core.DetectEquivocation(p.chainID, previous, attestation)
+		proof, err := core.DetectEquivocation(p.chainID, key, previous, attestation)
 		if err != nil {
 			return false, err
 		}
 		if proof != nil {
+			if index < len(p.addresses) {
+				proof.Validator = p.addresses[index]
+			}
 			p.evidence = append(p.evidence, proof)
-			return false, fmt.Errorf("%w: %s at height %d", ErrEquivocation, attester, attestation.Number)
+			return false, fmt.Errorf("%w: validator %d at height %d", ErrEquivocation, index, attestation.Number)
 		}
 		return false, nil
 	}
 
-	byValidator[attester] = attestation
+	// The signature is checked before it is stored: an unverified vote in the
+	// pool would corrupt any aggregate built from it, and the aggregate would
+	// then fail with no indication of which vote was at fault.
+	if err := attestation.Verify(p.chainID, key); err != nil {
+		return false, err
+	}
+
+	byIndex[index] = attestation
 
 	byHash := p.votes[attestation.Number]
 	if byHash == nil {
-		byHash = make(map[common.Hash]map[common.Address]*core.Attestation)
+		byHash = make(map[common.Hash]map[int][]byte)
 		p.votes[attestation.Number] = byHash
 	}
 	if byHash[attestation.BlockHash] == nil {
-		byHash[attestation.BlockHash] = make(map[common.Address]*core.Attestation)
+		byHash[attestation.BlockHash] = make(map[int][]byte)
 	}
-	byHash[attestation.BlockHash][attester] = attestation
+	byHash[attestation.BlockHash][index] = attestation.Signature
 	return true, nil
 }
 
@@ -160,14 +193,10 @@ func (p *AttestationPool) Certificate(number uint64, blockHash common.Hash) *cor
 	defer p.mu.RUnlock()
 
 	votes := p.votes[number][blockHash]
-	if len(votes) < p.Quorum() {
+	if len(votes) < core.Quorum(len(p.keys)) {
 		return nil
 	}
-	list := make([]*core.Attestation, 0, len(votes))
-	for _, a := range votes {
-		list = append(list, a)
-	}
-	qc, err := core.NewQuorumCert(number, blockHash, list)
+	qc, err := core.NewQuorumCert(number, blockHash, len(p.keys), votes)
 	if err != nil {
 		return nil
 	}
@@ -190,7 +219,6 @@ func (p *AttestationPool) MarkFinalized(number uint64) {
 		return
 	}
 	p.finalized = number
-
 	if number <= p.retain {
 		return
 	}
@@ -198,7 +226,7 @@ func (p *AttestationPool) MarkFinalized(number uint64) {
 	for height := range p.votes {
 		if height < cutoff {
 			delete(p.votes, height)
-			delete(p.byValidator, height)
+			delete(p.byIndex, height)
 		}
 	}
 }
@@ -214,39 +242,42 @@ func (p *AttestationPool) Finalized() uint64 {
 func (p *AttestationPool) Evidence() []*core.Equivocation {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	out := make([]*core.Equivocation, len(p.evidence))
-	copy(out, p.evidence)
-	return out
+	return append([]*core.Equivocation(nil), p.evidence...)
 }
 
 // AddEvidence records an equivocation proof received from a peer, after
-// re-verifying it. Evidence is never trusted on a peer's word: a forged proof
-// would otherwise let anyone get a validator slashed.
+// re-verifying it against the named validator's key.
 func (p *AttestationPool) AddEvidence(proof *core.Equivocation) error {
-	if err := proof.Verify(p.chainID); err != nil {
-		return err
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if _, ok := p.validators[proof.Validator]; !ok {
-		return fmt.Errorf("%w: %s", core.ErrUnknownAttester, proof.Validator)
+
+	index := int(proof.Index)
+	if index < 0 || index >= len(p.keys) || p.keys[index] == nil {
+		return fmt.Errorf("%w: index %d", ErrUnknownIndex, index)
+	}
+	if err := proof.Verify(p.chainID, p.keys[index]); err != nil {
+		return err
 	}
 	for _, existing := range p.evidence {
-		if existing.Validator == proof.Validator && existing.Number == proof.Number {
+		if existing.Index == proof.Index && existing.Number == proof.Number {
 			return nil // already known
 		}
+	}
+	if index < len(p.addresses) {
+		proof.Validator = p.addresses[index]
 	}
 	p.evidence = append(p.evidence, proof)
 	return nil
 }
 
-// Attest signs a vote for a block.
-func (p *AttestationPool) Attest(key *secp256k1.PrivateKey, number uint64, blockHash common.Hash) (*core.Attestation, error) {
-	return core.SignAttestation(key, p.chainID, number, blockHash)
+// Attest signs a vote for a block on behalf of the validator at an index.
+func (p *AttestationPool) Attest(key *bls12381.SecretKey, index uint64, number uint64, blockHash common.Hash) *core.Attestation {
+	return core.SignAttestation(key, p.chainID, index, number, blockHash)
 }
 
-// VerifyJustification checks a header's embedded certificate.
-func (p *PoA) VerifyJustification(chainID *big.Int, header *core.Header) (*core.QuorumCert, error) {
+// VerifyJustification checks a header's embedded certificate against the
+// attestation keys of the set that governed its height.
+func (p *PoA) VerifyJustification(chainID *big.Int, keys []*bls12381.PublicKey, header *core.Header) (*core.QuorumCert, error) {
 	qc, err := core.DecodeQuorumCert(header.Justification)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrJustificationInvalid, err)
@@ -259,7 +290,7 @@ func (p *PoA) VerifyJustification(chainID *big.Int, header *core.Header) (*core.
 	if qc.Number >= header.NumberU64() {
 		return nil, fmt.Errorf("%w: certificate for %d in block %d", ErrJustificationInvalid, qc.Number, header.NumberU64())
 	}
-	if _, err := qc.Verify(chainID, p.validators); err != nil {
+	if _, err := qc.Verify(chainID, keys); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrJustificationInvalid, err)
 	}
 	return qc, nil

@@ -7,6 +7,7 @@ import (
 	"layer1/chain"
 	"layer1/common"
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/crypto/secp256k1"
 	"layer1/miner"
 	"layer1/processor"
@@ -38,12 +39,23 @@ func mineTo(t *testing.T, bc *chain.BlockChain, builders map[common.Address]*min
 	}
 }
 
-// depositTx builds a transaction that stakes for the sender.
+// depositTx builds a transaction that stakes for the sender and registers the
+// attestation key it will sign votes with.
 func depositTx(t *testing.T, key *secp256k1.PrivateKey, nonce uint64, withdrawal common.Address, amount *big.Int) *core.Transaction {
 	t.Helper()
+	blsKey := blsKeyFor(withdrawal)
+
 	data := append([]byte{processor.OpDeposit}, withdrawal[:]...)
+	data = append(data, blsKey.PublicKey().Bytes()...)
+	data = append(data, blsKey.ProvePossession().Bytes()...)
+
 	to := staking.StakingAddress
-	return signTxData(t, key, nonce, &to, amount, 200_000, data)
+	return signTxData(t, key, nonce, &to, amount, 500_000, data)
+}
+
+// blsKeyFor derives a test validator's attestation key.
+func blsKeyFor(validator common.Address) *bls12381.SecretKey {
+	return bls12381.DeriveSecretKey(append([]byte("test-validator"), validator[:]...))
 }
 
 func signTxData(t *testing.T, key *secp256k1.PrivateKey, nonce uint64, to *common.Address, value *big.Int, gas uint64, data []byte) *core.Transaction {
@@ -227,16 +239,21 @@ func TestSlashingThroughEvidence(t *testing.T) {
 	mineTo(t, bc, builders, clock, 1, map[uint64]core.Transactions{1: {deposit}})
 	mineTo(t, bc, builders, clock, staking.EpochLength, nil)
 
-	// The staked validator signs two different blocks at the same height.
-	first, err := core.SignAttestation(keys[1], chainID, 7, common.Keccak256([]byte("block A")))
+	// The staked validator signs two different blocks at the same height. The
+	// evidence names it by registry index, which is what the chain looks the
+	// attestation key up by.
+	registry, err := bc.StakingRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := core.SignAttestation(keys[1], chainID, 7, common.Keccak256([]byte("block B")))
+	accused, err := registry.ByAddress(addrs[1])
 	if err != nil {
 		t.Fatal(err)
 	}
-	evidence := &core.Equivocation{Validator: addrs[1], Number: 7, First: first, Second: second}
+	blsKey := blsKeyFor(addrs[1])
+	first := core.SignAttestation(blsKey, chainID, accused.Index, 7, common.Keccak256([]byte("block A")))
+	second := core.SignAttestation(blsKey, chainID, accused.Index, 7, common.Keccak256([]byte("block B")))
+	evidence := &core.Equivocation{Index: accused.Index, Number: 7, First: first, Second: second}
 	encoded, err := rlp.Encode(evidence)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +265,7 @@ func TestSlashingThroughEvidence(t *testing.T) {
 	next := bc.CurrentBlock().NumberU64() + 1
 	mineTo(t, bc, builders, clock, next, map[uint64]core.Transactions{next: {report}})
 
-	registry, _ := bc.StakingRegistry()
+	registry, _ = bc.StakingRegistry()
 	v, err := registry.ByAddress(addrs[1])
 	if err != nil {
 		t.Fatal(err)
@@ -275,8 +292,8 @@ func TestForgedEvidenceDoesNotSlash(t *testing.T) {
 
 	// Two honest attestations for the same block are not equivocation, however
 	// the evidence is labelled.
-	a, _ := core.SignAttestation(keys[0], chainID, 3, common.Keccak256([]byte("same block")))
-	evidence := &core.Equivocation{Validator: addrs[0], Number: 3, First: a, Second: a}
+	a := core.SignAttestation(staking.DeriveGenesisBLSKey(addrs[0]), chainID, 0, 3, common.Keccak256([]byte("same block")))
+	evidence := &core.Equivocation{Index: 0, Number: 3, First: a, Second: a}
 	encoded, _ := rlp.Encode(evidence)
 
 	to := staking.StakingAddress
@@ -355,5 +372,93 @@ func TestStakingInvariantAcrossAChain(t *testing.T) {
 	}
 	if got := statedb.GetBalance(staking.StakingAddress); got.Cmp(total) != 0 {
 		t.Fatalf("the staking account holds %s but validators own %s", got, total)
+	}
+}
+
+func TestDepositRegistersAnAttestationKey(t *testing.T) {
+	keys, addrs := testKeys(t, 2)
+	bc, engine, clock := newControlledChain(t, keys, addrs)
+	builders := map[common.Address]*miner.Builder{addrs[0]: miner.NewBuilder(bc, engine, keys[0])}
+
+	deposit := depositTx(t, keys[1], 0, addrs[1], staking.MinDeposit)
+	mineTo(t, bc, builders, clock, 1, map[uint64]core.Transactions{1: {deposit}})
+
+	registry, err := bc.StakingRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := registry.ByAddress(addrs[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := blsKeyFor(addrs[1]).PublicKey().Bytes()
+	if string(v.BLSPublicKey) != string(want) {
+		t.Fatalf("registered key = %x, want %x", v.BLSPublicKey, want)
+	}
+	// And it survives a state commit, since it lives in account storage.
+	if _, err := bls12381.PublicKeyFromBytes(v.BLSPublicKey); err != nil {
+		t.Fatalf("the stored key does not decode: %v", err)
+	}
+}
+
+func TestDepositWithoutPossessionProofIsRefused(t *testing.T) {
+	keys, addrs := testKeys(t, 2)
+	bc, engine, clock := newControlledChain(t, keys, addrs)
+	builders := map[common.Address]*miner.Builder{addrs[0]: miner.NewBuilder(bc, engine, keys[0])}
+
+	// A key the sender cannot prove it holds — the rogue key an aggregation
+	// scheme has to refuse.
+	victim := blsKeyFor(addrs[0]).PublicKey()
+	attacker := blsKeyFor(addrs[1])
+	rogue := &struct{}{}
+	_ = rogue
+
+	data := append([]byte{processor.OpDeposit}, addrs[1][:]...)
+	data = append(data, victim.Bytes()...)                     // someone else's key
+	data = append(data, attacker.ProvePossession().Bytes()...) // a proof for a different key
+
+	to := staking.StakingAddress
+	tx := signTxData(t, keys[1], 0, &to, staking.MinDeposit, 500_000, data)
+	mineTo(t, bc, builders, clock, 1, map[uint64]core.Transactions{1: {tx}})
+
+	registry, _ := bc.StakingRegistry()
+	if _, err := registry.ByAddress(addrs[1]); err == nil {
+		t.Fatal("a deposit with a mismatched possession proof registered a validator")
+	}
+}
+
+func TestGenesisValidatorsHaveAttestationKeys(t *testing.T) {
+	keys, addrs := testKeys(t, 2)
+	bc, _, _ := newControlledChain(t, keys, addrs)
+
+	registry, err := bc.StakingRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := registry.ByAddress(addrs[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(v.BLSPublicKey) != staking.BLSPublicKeyLength {
+		t.Fatalf("genesis validator has no attestation key: %x", v.BLSPublicKey)
+	}
+	// The derivation has to be reproducible, or nodes would disagree about who
+	// signed a certificate.
+	want := staking.DeriveGenesisBLSKey(addrs[0]).PublicKey().Bytes()
+	if string(v.BLSPublicKey) != string(want) {
+		t.Fatal("the genesis key derivation is not reproducible")
+	}
+
+	// The ordered key list is what an aggregate's bitfield indexes into.
+	blsKeys, err := registry.ActiveBLSKeysAt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addresses, err := registry.ActiveAddressesAt(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blsKeys) != len(addresses) {
+		t.Fatalf("%d keys for %d validators: the bitfield would be meaningless", len(blsKeys), len(addresses))
 	}
 }

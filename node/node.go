@@ -87,6 +87,7 @@ type Node struct {
 	attestations    *consensus.AttestationPool
 	pruner          *chain.Pruner
 	snap            snapSync
+	blsCache        blsKeyCache
 
 	quit     chan struct{}
 	quitOnce sync.Once
@@ -165,7 +166,18 @@ func New(config *Config) (*Node, error) {
 		quit:     make(chan struct{}),
 	}
 	n.txpool = txpool.New(txpool.DefaultConfig(), genesis.ChainID, n)
-	n.attestations = consensus.NewAttestationPool(genesis.ChainID, genesis.Validators)
+	genesisKeys, err := bc.BLSKeysAt(0)
+	if err != nil {
+		store.Close()
+		return nil, err
+	}
+	genesisEncoded := make([][]byte, len(genesisKeys))
+	for i, key := range genesisKeys {
+		if key != nil {
+			genesisEncoded[i] = key.Bytes()
+		}
+	}
+	n.attestations = consensus.NewAttestationPool(genesis.ChainID, bc.Validators(), genesisEncoded)
 
 	pruneConfig := config.Prune
 	if pruneConfig.Retain == 0 && pruneConfig.Interval == 0 && !pruneConfig.Enabled {
@@ -311,9 +323,23 @@ func (n *Node) HandleEvidence(evidence []*core.Equivocation) {
 // its votes rejected, and the quorum would be computed for a set that no longer
 // exists.
 func (n *Node) syncValidatorSet() {
-	if set := n.chain.Validators(); len(set) > 0 {
-		n.attestations.UpdateValidators(set)
+	next := n.chain.CurrentBlock().NumberU64() + 1
+	set, err := n.chain.ValidatorsAt(next)
+	if err != nil || len(set) == 0 {
+		return
 	}
+	keys, err := n.chain.BLSKeysAt(next)
+	if err != nil {
+		n.log.Warn("could not read the attestation keys for the next block", "err", err)
+		return
+	}
+	encoded := make([][]byte, len(keys))
+	for i, key := range keys {
+		if key != nil {
+			encoded[i] = key.Bytes()
+		}
+	}
+	n.attestations.UpdateValidators(set, encoded)
 }
 
 // tryFinalize promotes a block to final once a quorum has attested to it.
@@ -331,21 +357,25 @@ func (n *Node) tryFinalize(number uint64, hash common.Hash) {
 	}
 	n.attestations.MarkFinalized(number)
 	n.log.Info("finalized block", "number", number, "hash", hash,
-		"votes", len(qc.Signatures), "quorum", n.attestations.Quorum())
+		"votes", qc.Count(), "quorum", n.attestations.Quorum())
 }
 
 // attest votes for a block this node has verified and imported. A validator
 // only ever attests to a block it executed itself, so a quorum is a statement
 // about validity, not just about what was seen first.
 func (n *Node) attest(block *core.Block) {
-	if n.config.Validator == nil || !n.engine.IsValidator(keystore.AddressOf(n.config.Validator)) {
+	if n.config.Validator == nil {
 		return
 	}
-	attestation, err := n.attestations.Attest(n.config.Validator, block.NumberU64(), block.Hash())
-	if err != nil {
-		n.log.Error("signing attestation", "number", block.NumberU64(), "err", err)
+	index, ok := n.attestations.IndexOf(keystore.AddressOf(n.config.Validator))
+	if !ok {
+		return // not in the set that governs this height
+	}
+	blsKey := n.blsKey()
+	if blsKey == nil {
 		return
 	}
+	attestation := n.attestations.Attest(blsKey, uint64(index), block.NumberU64(), block.Hash())
 	if _, err := n.attestations.Add(attestation); err != nil {
 		n.log.Error("recording own attestation", "err", err)
 		return

@@ -6,6 +6,7 @@ import (
 	"sort"
 
 	"layer1/common"
+	"layer1/crypto/bls12381"
 )
 
 // The validator lifecycle.
@@ -39,6 +40,42 @@ func (m *Manager) Registry() *Registry { return m.registry }
 // account by the surrounding state transition; this records the claim on it.
 // A deposit for an address that is already registered tops it up, which is how
 // a validator recovers from penalties without needing a second key.
+// DepositWithKey records a deposit that also registers an attestation key.
+//
+// The proof of possession is mandatory. Without it a validator could register a
+// key computed from the other validators' keys and then produce aggregate
+// signatures nobody agreed to — the rogue key attack, which is the one way an
+// aggregation scheme can be broken by a participant rather than by breaking the
+// cryptography.
+func (m *Manager) DepositWithKey(validator, withdrawal common.Address, blsKey, possession []byte, amount *big.Int, epoch uint64) (*Validator, error) {
+	if len(blsKey) != BLSPublicKeyLength {
+		return nil, fmt.Errorf("%w: attestation key must be %d bytes, got %d", ErrBadBLSKey, BLSPublicKeyLength, len(blsKey))
+	}
+	pub, err := bls12381.PublicKeyFromBytes(blsKey)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadBLSKey, err)
+	}
+	proof, err := bls12381.SignatureFromBytes(possession)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrBadPossession, err)
+	}
+	if !bls12381.VerifyPossession(pub, proof) {
+		return nil, ErrBadPossession
+	}
+
+	v, err := m.Deposit(validator, withdrawal, amount, epoch)
+	if err != nil {
+		return nil, err
+	}
+	// A top-up must not silently change the key an existing validator attests
+	// with; only a first registration sets it.
+	if len(v.BLSPublicKey) == 0 {
+		v.BLSPublicKey = append([]byte(nil), blsKey...)
+		m.registry.Put(v)
+	}
+	return v, nil
+}
+
 func (m *Manager) Deposit(validator, withdrawal common.Address, amount *big.Int, epoch uint64) (*Validator, error) {
 	if existing, err := m.registry.ByAddress(validator); err == nil {
 		switch existing.Status {
@@ -71,6 +108,17 @@ func (m *Manager) Deposit(validator, withdrawal common.Address, amount *big.Int,
 	}
 	m.registry.Append(v)
 	return v, nil
+}
+
+// DeriveGenesisBLSKey produces the attestation key of a genesis validator.
+//
+// A genesis validator has no deposit transaction to carry a key in, so one is
+// derived from its address. That is reproducible from the genesis file alone,
+// which is what matters for a development chain; a production genesis should
+// list real keys, because a derived key is one whose secret is known to anyone
+// who can read the address.
+func DeriveGenesisBLSKey(validator common.Address) *bls12381.SecretKey {
+	return bls12381.DeriveSecretKey(append([]byte("layer1/genesis-validator/v1"), validator[:]...))
 }
 
 // RequestExit begins a validator's voluntary departure.

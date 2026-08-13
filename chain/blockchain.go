@@ -9,6 +9,7 @@ import (
 	"layer1/common"
 	"layer1/consensus"
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/db"
 	"layer1/processor"
 	"layer1/staking"
@@ -348,8 +349,8 @@ func (bc *BlockChain) insertLocked(block *core.Block) error {
 	// the fork choice means the head can only move to a branch that respects
 	// the newly settled history.
 	if qc, err := block.Justification(); err == nil && !qc.IsEmpty() {
-		if validators, verr := bc.ValidatorsAt(qc.Number); verr == nil {
-			if _, err := qc.Verify(bc.config.ChainID, validators); err == nil {
+		if keys, verr := bc.BLSKeysAt(qc.Number); verr == nil {
+			if _, err := qc.Verify(bc.config.ChainID, keys); err == nil {
 				bc.finalizeLocked(qc)
 			}
 		}
@@ -412,11 +413,11 @@ func (bc *BlockChain) verifyBlock(block *core.Block, parent *core.Block) error {
 		if qc.Number >= block.NumberU64() {
 			return fmt.Errorf("chain: block %d justifies height %d, which is not an ancestor", block.NumberU64(), qc.Number)
 		}
-		validators, err := bc.ValidatorsAt(qc.Number)
+		keys, err := bc.BLSKeysAt(qc.Number)
 		if err != nil {
 			return err
 		}
-		if _, err := qc.Verify(bc.config.ChainID, validators); err != nil {
+		if _, err := qc.Verify(bc.config.ChainID, keys); err != nil {
 			return fmt.Errorf("chain: block %d carries an invalid justification: %w", block.NumberU64(), err)
 		}
 	}
@@ -581,4 +582,64 @@ func (bc *BlockChain) StakingRegistry() (*staking.Registry, error) {
 		return nil, err
 	}
 	return staking.NewRegistry(statedb), nil
+}
+
+// BLSKeysAt returns the attestation keys of the validator set governing a
+// height, in the same order as ValidatorsAt.
+//
+// A certificate's bitfield indexes into this list, so the ordering is part of
+// consensus: two nodes that derived it differently would disagree about who
+// signed. Both orderings come from the registry's index order, which is fixed.
+func (bc *BlockChain) BLSKeysAt(blockNumber uint64) ([]*bls12381.PublicKey, error) {
+	raw, err := bc.rawBLSKeysAt(blockNumber)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*bls12381.PublicKey, len(raw))
+	for i, encoded := range raw {
+		if len(encoded) == 0 {
+			continue // a validator with no registered key cannot attest
+		}
+		key, err := bls12381.PublicKeyFromBytes(encoded)
+		if err != nil {
+			return nil, fmt.Errorf("chain: validator %d has an unusable attestation key: %w", i, err)
+		}
+		out[i] = key
+	}
+	return out, nil
+}
+
+// rawBLSKeysAt returns the encoded attestation keys for a height.
+func (bc *BlockChain) rawBLSKeysAt(blockNumber uint64) ([][]byte, error) {
+	epoch := staking.EpochOf(blockNumber)
+	if epoch == 0 {
+		return bc.genesisBLSKeys()
+	}
+	boundary := staking.EpochStart(epoch) - 1
+	header := bc.GetHeaderByNumber(boundary)
+	if header == nil {
+		return bc.genesisBLSKeys()
+	}
+	statedb, err := bc.StateAt(header.StateRoot)
+	if err != nil {
+		return nil, fmt.Errorf("chain: reading attestation keys at block %d: %w", boundary, err)
+	}
+	keys, err := staking.NewRegistry(statedb).ActiveBLSKeysAt(epoch)
+	if err != nil {
+		return nil, err
+	}
+	if len(keys) == 0 {
+		return bc.genesisBLSKeys()
+	}
+	return keys, nil
+}
+
+// genesisBLSKeys reads the keys from the genesis state, which is the fallback
+// whenever a later epoch's set cannot be determined.
+func (bc *BlockChain) genesisBLSKeys() ([][]byte, error) {
+	statedb, err := bc.StateAt(bc.genesis.StateRoot())
+	if err != nil {
+		return nil, err
+	}
+	return staking.NewRegistry(statedb).ActiveBLSKeysAt(0)
 }

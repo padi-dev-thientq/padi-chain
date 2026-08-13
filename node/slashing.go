@@ -4,6 +4,7 @@ import (
 	"math/big"
 
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/keystore"
 	"layer1/processor"
 	"layer1/rlp"
@@ -27,8 +28,22 @@ func (n *Node) reportEquivocation(proof *core.Equivocation) {
 	if n.config.Validator == nil {
 		return // nothing to sign with
 	}
-	// Re-verify before spending anything on it.
-	if err := proof.Verify(n.ChainID()); err != nil {
+	// Re-verify before spending anything on it, against the key the registry
+	// holds for the accused rather than one the evidence supplies.
+	registry, err := n.chain.StakingRegistry()
+	if err != nil {
+		return
+	}
+	accused, err := registry.Get(proof.Index)
+	if err != nil {
+		n.log.Debug("evidence names a validator that is not registered", "index", proof.Index)
+		return
+	}
+	key, err := bls12381.PublicKeyFromBytes(accused.BLSPublicKey)
+	if err != nil {
+		return
+	}
+	if err := proof.Verify(n.ChainID(), key); err != nil {
 		n.log.Debug("not reporting unverifiable evidence", "err", err)
 		return
 	}
@@ -41,7 +56,7 @@ func (n *Node) reportEquivocation(proof *core.Equivocation) {
 	// Reporting the offence must not be what puts this node out of funds.
 	if statedb.GetBalance(from).Sign() == 0 {
 		n.log.Warn("cannot report equivocation: the validator key has no funds",
-			"validator", proof.Validator, "height", proof.Number)
+			"validator", accused.Address, "height", proof.Number)
 		return
 	}
 

@@ -87,7 +87,15 @@ func (n *Node) HandleSnapshot(block *core.Block, qc *core.QuorumCert) {
 	if qc.IsEmpty() || qc.BlockHash != block.Hash() {
 		return
 	}
-	if _, err := qc.Verify(n.ChainID(), n.engine.Validators()); err != nil {
+	// The certificate is checked against the attestation keys of the set that
+	// governed the offered height. Those keys come from this node's own
+	// genesis state, so the check does not depend on anything the peer said.
+	keys, err := n.chain.BLSKeysAt(qc.Number)
+	if err != nil {
+		n.log.Warn("could not read the attestation keys to check a snapshot offer", "err", err)
+		return
+	}
+	if _, err := qc.Verify(n.ChainID(), keys); err != nil {
 		n.log.Warn("rejected a snapshot offer with an invalid certificate", "err", err)
 		return
 	}

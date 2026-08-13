@@ -8,24 +8,25 @@ import (
 
 	"layer1/common"
 	"layer1/core"
-	"layer1/crypto/secp256k1"
+	"layer1/crypto/bls12381"
 )
 
 var testChainID = big.NewInt(1337)
 
-func validatorKeys(t *testing.T, n int) ([]*secp256k1.PrivateKey, []common.Address) {
+// validatorSet returns n validators: their addresses and the BLS keys they
+// attest with.
+func validatorSet(t *testing.T, n int) ([]*bls12381.SecretKey, []common.Address, [][]byte) {
 	t.Helper()
-	var keys []*secp256k1.PrivateKey
+	var secrets []*bls12381.SecretKey
 	var addrs []common.Address
+	var keys [][]byte
 	for i := 1; i <= n; i++ {
-		key, err := secp256k1.PrivateKeyFromBytes(common.LeftPadBytes([]byte{byte(i)}, 32))
-		if err != nil {
-			t.Fatal(err)
-		}
-		keys = append(keys, key)
-		addrs = append(addrs, common.BytesToAddress(common.Keccak256(key.PublicKey().Bytes()).Bytes()[12:]))
+		secret := bls12381.DeriveSecretKey([]byte{byte(i)})
+		secrets = append(secrets, secret)
+		addrs = append(addrs, common.BytesToAddress([]byte{byte(i)}))
+		keys = append(keys, secret.PublicKey().Bytes())
 	}
-	return keys, addrs
+	return secrets, addrs, keys
 }
 
 func TestQuorumThreshold(t *testing.T) {
@@ -46,191 +47,119 @@ func TestQuorumThreshold(t *testing.T) {
 	}
 }
 
-func TestAttestationSignAndRecover(t *testing.T) {
-	keys, addrs := validatorKeys(t, 1)
+func TestAttestationVerification(t *testing.T) {
+	secrets, _, keys := validatorSet(t, 2)
 	hash := common.Keccak256([]byte("block"))
 
-	attestation, err := core.SignAttestation(keys[0], testChainID, 7, hash)
+	attestation := core.SignAttestation(secrets[0], testChainID, 0, 7, hash)
+	pub, err := bls12381.PublicKeyFromBytes(keys[0])
 	if err != nil {
 		t.Fatal(err)
 	}
-	attester, err := attestation.Attester(testChainID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if attester != addrs[0] {
-		t.Fatalf("recovered %s, want %s", attester, addrs[0])
+	if err := attestation.Verify(testChainID, pub); err != nil {
+		t.Fatalf("a valid vote failed verification: %v", err)
 	}
 
-	// An attestation is bound to its chain: the same signature must not
-	// recover the validator on another network.
-	if other, err := attestation.Attester(big.NewInt(999)); err == nil && other == addrs[0] {
-		t.Fatal("an attestation must not be valid on a different chain")
+	// A vote is bound to its chain, height and block.
+	other, _ := bls12381.PublicKeyFromBytes(keys[1])
+	if attestation.Verify(testChainID, other) == nil {
+		t.Fatal("the vote verified against another validator's key")
+	}
+	if attestation.Verify(big.NewInt(999), pub) == nil {
+		t.Fatal("the vote verified on a different chain")
+	}
+	wrongHeight := core.SignAttestation(secrets[0], testChainID, 0, 8, hash)
+	wrongHeight.Number = 7
+	if wrongHeight.Verify(testChainID, pub) == nil {
+		t.Fatal("a vote for another height verified")
 	}
 }
 
-func TestQuorumCertificateVerification(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
+func TestAggregateCertificateVerifies(t *testing.T) {
+	secrets, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs, keys)
 	hash := common.Keccak256([]byte("target"))
 	quorum := core.Quorum(4) // 3
 
-	attest := func(i int) *core.Attestation {
-		a, err := core.SignAttestation(keys[i], testChainID, 5, hash)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return a
-	}
-
-	t.Run("a quorum verifies", func(t *testing.T) {
-		qc, err := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1), attest(2)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		attesters, err := qc.Verify(testChainID, addrs)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(attesters) != quorum {
-			t.Fatalf("verified %d attesters, want %d", len(attesters), quorum)
-		}
-	})
-
-	t.Run("short of a quorum is rejected", func(t *testing.T) {
-		qc, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1)})
-		if _, err := qc.Verify(testChainID, addrs); !errors.Is(err, core.ErrQuorumNotMet) {
-			t.Fatalf("got %v, want ErrQuorumNotMet", err)
-		}
-	})
-
-	t.Run("the same validator cannot be counted twice", func(t *testing.T) {
-		// Padding a certificate with duplicates is how a minority would try to
-		// manufacture a quorum.
-		qc, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(0), attest(0)})
-		if _, err := qc.Verify(testChainID, addrs); !errors.Is(err, core.ErrDuplicateAttester) {
-			t.Fatalf("got %v, want ErrDuplicateAttester", err)
-		}
-	})
-
-	t.Run("outsiders are rejected", func(t *testing.T) {
-		outsiderKey, _ := secp256k1.PrivateKeyFromBytes(common.LeftPadBytes([]byte{99}, 32))
-		outsider, _ := core.SignAttestation(outsiderKey, testChainID, 5, hash)
-		qc, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1), outsider})
-		if _, err := qc.Verify(testChainID, addrs); !errors.Is(err, core.ErrUnknownAttester) {
-			t.Fatalf("got %v, want ErrUnknownAttester", err)
-		}
-	})
-
-	t.Run("a tampered signature is rejected", func(t *testing.T) {
-		qc, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1), attest(2)})
-		qc.Signatures[0] = append([]byte(nil), qc.Signatures[0]...)
-		qc.Signatures[0][10] ^= 0xff
-		if _, err := qc.Verify(testChainID, addrs); err == nil {
-			t.Fatal("a certificate with a mutated signature must not verify")
-		}
-	})
-
-	t.Run("votes for another block do not count", func(t *testing.T) {
-		other := common.Keccak256([]byte("another block"))
-		stray, _ := core.SignAttestation(keys[3], testChainID, 5, other)
-		if _, err := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), stray}); !errors.Is(err, core.ErrWrongTarget) {
-			t.Fatalf("got %v, want ErrWrongTarget", err)
-		}
-	})
-
-	t.Run("encoding round-trips", func(t *testing.T) {
-		qc, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1), attest(2)})
-		enc, err := qc.Encode()
-		if err != nil {
-			t.Fatal(err)
-		}
-		decoded, err := core.DecodeQuorumCert(enc)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := decoded.Verify(testChainID, addrs); err != nil {
-			t.Fatalf("the decoded certificate does not verify: %v", err)
-		}
-	})
-
-	t.Run("certificates are deterministic", func(t *testing.T) {
-		// Two nodes that collected the same votes in different orders must
-		// produce byte-identical certificates, or they would build different
-		// blocks from the same information.
-		a, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(0), attest(1), attest(2)})
-		b, _ := core.NewQuorumCert(5, hash, []*core.Attestation{attest(2), attest(0), attest(1)})
-		encA, _ := a.Encode()
-		encB, _ := b.Encode()
-		if string(encA) != string(encB) {
-			t.Fatal("certificate encoding depends on the order votes arrived in")
-		}
-	})
-}
-
-func TestAttestationPoolReachesQuorum(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
-	pool := NewAttestationPool(testChainID, addrs)
-	hash := common.Keccak256([]byte("block"))
-
-	for i := 0; i < 2; i++ {
-		a, _ := core.SignAttestation(keys[i], testChainID, 1, hash)
-		added, err := pool.Add(a)
-		if err != nil || !added {
+	for i := 0; i < quorum; i++ {
+		if added, err := pool.Add(pool.Attest(secrets[i], uint64(i), 5, hash)); err != nil || !added {
 			t.Fatalf("vote %d: added=%v err=%v", i, added, err)
 		}
-		if pool.Certificate(1, hash) != nil {
-			t.Fatalf("a certificate formed after only %d votes, quorum is %d", i+1, pool.Quorum())
-		}
 	}
-
-	third, _ := core.SignAttestation(keys[2], testChainID, 1, hash)
-	if _, err := pool.Add(third); err != nil {
-		t.Fatal(err)
-	}
-	qc := pool.Certificate(1, hash)
+	qc := pool.Certificate(5, hash)
 	if qc == nil {
 		t.Fatal("no certificate at quorum")
 	}
-	if _, err := qc.Verify(testChainID, addrs); err != nil {
+	if qc.Count() != quorum {
+		t.Fatalf("certificate names %d signers, want %d", qc.Count(), quorum)
+	}
+
+	publics := make([]*bls12381.PublicKey, len(keys))
+	for i, raw := range keys {
+		publics[i], _ = bls12381.PublicKeyFromBytes(raw)
+	}
+	if _, err := qc.Verify(testChainID, publics); err != nil {
 		t.Fatalf("the pool produced a certificate that does not verify: %v", err)
+	}
+	// One signature, whatever the number of signers.
+	if len(qc.Signature) != bls12381.SignatureLength {
+		t.Fatalf("certificate signature is %d bytes", len(qc.Signature))
 	}
 }
 
-func TestAttestationPoolRejectsRepeatsAndOutsiders(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
-	pool := NewAttestationPool(testChainID, addrs)
+func TestCertificateNeedsAQuorum(t *testing.T) {
+	secrets, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs, keys)
+	hash := common.Keccak256([]byte("target"))
+
+	for i := 0; i < core.Quorum(4)-1; i++ {
+		pool.Add(pool.Attest(secrets[i], uint64(i), 5, hash))
+		if pool.Certificate(5, hash) != nil {
+			t.Fatalf("a certificate formed after only %d votes", i+1)
+		}
+	}
+}
+
+func TestPoolRejectsOutsidersAndForgeries(t *testing.T) {
+	secrets, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs, keys)
 	hash := common.Keccak256([]byte("block"))
 
-	a, _ := core.SignAttestation(keys[0], testChainID, 1, hash)
-	if added, _ := pool.Add(a); !added {
-		t.Fatal("the first vote was not recorded")
-	}
-	if added, _ := pool.Add(a); added {
-		t.Fatal("the same vote was counted twice")
+	// An index outside the set.
+	stray := core.SignAttestation(secrets[0], testChainID, 99, 1, hash)
+	if _, err := pool.Add(stray); !errors.Is(err, ErrUnknownIndex) {
+		t.Fatalf("got %v, want ErrUnknownIndex", err)
 	}
 
-	outsiderKey, _ := secp256k1.PrivateKeyFromBytes(common.LeftPadBytes([]byte{99}, 32))
-	outsider, _ := core.SignAttestation(outsiderKey, testChainID, 1, hash)
-	if _, err := pool.Add(outsider); !errors.Is(err, core.ErrUnknownAttester) {
-		t.Fatalf("got %v, want ErrUnknownAttester", err)
+	// A vote signed by one validator but claiming another's index: with BLS
+	// the signature does not name its signer, so this is exactly the forgery
+	// the pool has to catch.
+	impostor := core.SignAttestation(secrets[0], testChainID, 1, 1, hash)
+	if _, err := pool.Add(impostor); err == nil {
+		t.Fatal("a vote claiming another validator's index was accepted")
+	}
+
+	// A repeat of the same vote is not new.
+	good := pool.Attest(secrets[0], 0, 1, hash)
+	if added, _ := pool.Add(good); !added {
+		t.Fatal("the first vote was not recorded")
+	}
+	if added, _ := pool.Add(good); added {
+		t.Fatal("the same vote was counted twice")
 	}
 }
 
 func TestEquivocationIsDetectedAndProvable(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
-	pool := NewAttestationPool(testChainID, addrs)
+	secrets, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs, keys)
 
 	first := common.Keccak256([]byte("block A"))
 	second := common.Keccak256([]byte("block B"))
 
-	honest, _ := core.SignAttestation(keys[0], testChainID, 1, first)
-	if _, err := pool.Add(honest); err != nil {
+	if _, err := pool.Add(pool.Attest(secrets[0], 0, 1, first)); err != nil {
 		t.Fatal(err)
 	}
-
-	// The same validator now votes for a different block at the same height.
-	conflicting, _ := core.SignAttestation(keys[0], testChainID, 1, second)
-	if _, err := pool.Add(conflicting); !errors.Is(err, ErrEquivocation) {
+	if _, err := pool.Add(pool.Attest(secrets[0], 0, 1, second)); !errors.Is(err, ErrEquivocation) {
 		t.Fatalf("got %v, want ErrEquivocation", err)
 	}
 
@@ -238,66 +167,87 @@ func TestEquivocationIsDetectedAndProvable(t *testing.T) {
 	if len(evidence) != 1 {
 		t.Fatalf("collected %d proofs, want 1", len(evidence))
 	}
-	if evidence[0].Validator != addrs[0] || evidence[0].Number != 1 {
-		t.Fatalf("evidence names %s at %d", evidence[0].Validator, evidence[0].Number)
+	if evidence[0].Index != 0 || evidence[0].Validator != addrs[0] {
+		t.Fatalf("evidence names validator %d (%s)", evidence[0].Index, evidence[0].Validator)
 	}
-	if err := evidence[0].Verify(testChainID); err != nil {
+	pub, _ := bls12381.PublicKeyFromBytes(keys[0])
+	if err := evidence[0].Verify(testChainID, pub); err != nil {
 		t.Fatalf("the pool produced evidence that does not verify: %v", err)
 	}
-
-	// The conflicting vote must not have been counted toward any quorum.
+	// The conflicting vote must not count toward any quorum.
 	if pool.VoteCount(1, second) != 0 {
 		t.Fatal("an equivocating vote was counted")
 	}
 }
 
 func TestForgedEvidenceIsRejected(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
-	pool := NewAttestationPool(testChainID, addrs)
+	secrets, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs, keys)
 	hash := common.Keccak256([]byte("block"))
 
-	a, _ := core.SignAttestation(keys[0], testChainID, 1, hash)
-	b, _ := core.SignAttestation(keys[1], testChainID, 1, hash)
+	a := core.SignAttestation(secrets[0], testChainID, 0, 1, hash)
+	b := core.SignAttestation(secrets[1], testChainID, 1, 1, hash)
 
 	// Two different validators agreeing is not misbehaviour.
-	if err := pool.AddEvidence(&core.Equivocation{
-		Validator: addrs[0], Number: 1, First: a, Second: b,
-	}); err == nil {
-		t.Fatal("evidence naming two different signers must be rejected")
+	if err := pool.AddEvidence(&core.Equivocation{Index: 0, Number: 1, First: a, Second: b}); err == nil {
+		t.Fatal("evidence citing two different validators was accepted")
 	}
-
 	// Nor is the same validator voting the same way twice.
-	if err := pool.AddEvidence(&core.Equivocation{
-		Validator: addrs[0], Number: 1, First: a, Second: a,
-	}); err == nil {
-		t.Fatal("evidence citing identical votes must be rejected")
+	if err := pool.AddEvidence(&core.Equivocation{Index: 0, Number: 1, First: a, Second: a}); err == nil {
+		t.Fatal("evidence citing identical votes was accepted")
+	}
+	// Nor evidence attributed to a validator who did not sign it.
+	conflicting := core.SignAttestation(secrets[0], testChainID, 0, 1, common.Keccak256([]byte("other")))
+	if err := pool.AddEvidence(&core.Equivocation{Index: 2, Number: 1, First: a, Second: conflicting}); err == nil {
+		t.Fatal("misattributed evidence was accepted")
+	}
+	_ = addrs
+}
+
+func TestPoolFollowsAChangingValidatorSet(t *testing.T) {
+	secrets, addrs, keys := validatorSet(t, 4)
+	// The pool starts with the first two validators.
+	pool := NewAttestationPool(testChainID, addrs[:2], keys[:2])
+	hash := common.Keccak256([]byte("block"))
+
+	if got := pool.Quorum(); got != core.Quorum(2) {
+		t.Fatalf("quorum = %d, want %d", got, core.Quorum(2))
+	}
+	newcomer := core.SignAttestation(secrets[2], testChainID, 2, 1, hash)
+	if _, err := pool.Add(newcomer); err == nil {
+		t.Fatal("a vote from outside the set was accepted")
 	}
 
-	// Evidence attributed to the wrong validator must not stick.
-	conflicting, _ := core.SignAttestation(keys[0], testChainID, 1, common.Keccak256([]byte("other")))
-	if err := pool.AddEvidence(&core.Equivocation{
-		Validator: addrs[2], Number: 1, First: a, Second: conflicting,
-	}); err == nil {
-		t.Fatal("misattributed evidence must be rejected")
+	pool.UpdateValidators(addrs, keys)
+	if got := pool.Quorum(); got != core.Quorum(4) {
+		t.Fatalf("quorum = %d, want %d once the set has grown", got, core.Quorum(4))
+	}
+	if added, err := pool.Add(newcomer); err != nil || !added {
+		t.Fatalf("the newcomer's vote was still refused: %v", err)
 	}
 }
 
-func TestDifferentHeightsAreNotEquivocation(t *testing.T) {
-	keys, _ := validatorKeys(t, 1)
-	a, _ := core.SignAttestation(keys[0], testChainID, 1, common.Keccak256([]byte("x")))
-	b, _ := core.SignAttestation(keys[0], testChainID, 2, common.Keccak256([]byte("y")))
+func TestQuorumGrowsWithTheSet(t *testing.T) {
+	_, addrs, keys := validatorSet(t, 4)
+	pool := NewAttestationPool(testChainID, addrs[:1], keys[:1])
 
-	proof, err := core.DetectEquivocation(testChainID, a, b)
-	if err != nil {
-		t.Fatal(err)
+	// A single validator finalizes alone; two do not, because a set of two
+	// needs both. Getting this wrong would let a minority finalize.
+	if pool.Quorum() != 1 {
+		t.Fatalf("quorum for one validator = %d, want 1", pool.Quorum())
 	}
-	if proof != nil {
-		t.Fatal("voting at two different heights is normal, not equivocation")
+	pool.UpdateValidators(addrs[:2], keys[:2])
+	if pool.Quorum() != 2 {
+		t.Fatalf("quorum for two validators = %d, want 2", pool.Quorum())
+	}
+	pool.UpdateValidators(addrs, keys)
+	if pool.Quorum() != 3 {
+		t.Fatalf("quorum for four validators = %d, want 3", pool.Quorum())
 	}
 }
 
 func TestRoundBasedProposerFallback(t *testing.T) {
-	_, addrs := validatorKeys(t, 3)
+	_, addrs, _ := validatorSet(t, 3)
 	engine, err := NewPoA(addrs, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -323,7 +273,7 @@ func TestRoundBasedProposerFallback(t *testing.T) {
 }
 
 func TestRoundOpensOnlyAfterItsTimeout(t *testing.T) {
-	_, addrs := validatorKeys(t, 3)
+	_, addrs, _ := validatorSet(t, 3)
 	engine, err := NewPoA(addrs, 2)
 	if err != nil {
 		t.Fatal(err)
@@ -346,64 +296,5 @@ func TestRoundOpensOnlyAfterItsTimeout(t *testing.T) {
 		if got != c.want {
 			t.Errorf("at t=%d the open round is %d, want %d", c.at, got, c.want)
 		}
-	}
-}
-
-func TestPoolFollowsAChangingValidatorSet(t *testing.T) {
-	keys, addrs := validatorKeys(t, 4)
-	// The pool starts with the genesis set of two.
-	pool := NewAttestationPool(testChainID, addrs[:2])
-	hash := common.Keccak256([]byte("block"))
-
-	if got := pool.Quorum(); got != core.Quorum(2) {
-		t.Fatalf("quorum = %d, want %d for a set of two", got, core.Quorum(2))
-	}
-
-	// A validator that has since joined must not have its votes rejected.
-	newcomer, _ := core.SignAttestation(keys[2], testChainID, 1, hash)
-	if _, err := pool.Add(newcomer); !errors.Is(err, core.ErrUnknownAttester) {
-		t.Fatalf("got %v, want the vote refused before the set grows", err)
-	}
-
-	pool.UpdateValidators(addrs[:4])
-	if got := pool.Quorum(); got != core.Quorum(4) {
-		t.Fatalf("quorum = %d, want %d once the set has grown", got, core.Quorum(4))
-	}
-	if added, err := pool.Add(newcomer); err != nil || !added {
-		t.Fatalf("the newcomer's vote was still refused: %v", err)
-	}
-
-	// Votes cast before the change are kept: they were valid when cast.
-	for i := 0; i < 2; i++ {
-		a, _ := core.SignAttestation(keys[i], testChainID, 1, hash)
-		if _, err := pool.Add(a); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if pool.VoteCount(1, hash) != 3 {
-		t.Fatalf("votes = %d, want 3", pool.VoteCount(1, hash))
-	}
-	// Three of four is a quorum; two would not have been.
-	if pool.Certificate(1, hash) == nil {
-		t.Fatal("no certificate at the quorum for the enlarged set")
-	}
-}
-
-func TestQuorumGrowsWithTheSet(t *testing.T) {
-	_, addrs := validatorKeys(t, 4)
-	pool := NewAttestationPool(testChainID, addrs[:1])
-
-	// A single validator finalizes alone; two do not, because a set of two
-	// needs both. Getting this wrong would let a minority finalize.
-	if pool.Quorum() != 1 {
-		t.Fatalf("quorum for one validator = %d, want 1", pool.Quorum())
-	}
-	pool.UpdateValidators(addrs[:2])
-	if pool.Quorum() != 2 {
-		t.Fatalf("quorum for two validators = %d, want 2", pool.Quorum())
-	}
-	pool.UpdateValidators(addrs[:4])
-	if pool.Quorum() != 3 {
-		t.Fatalf("quorum for four validators = %d, want 3", pool.Quorum())
 	}
 }

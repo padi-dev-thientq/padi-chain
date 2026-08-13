@@ -38,6 +38,10 @@ type Genesis struct {
 	// WithdrawalAddresses maps a genesis validator to where its stake returns
 	// if it exits. A validator with no entry withdraws to itself.
 	WithdrawalAddresses map[common.Address]common.Address `json:"withdrawalAddresses,omitempty"`
+	// BLSKeys maps a genesis validator to the key it attests with. Omitted
+	// entries are derived from the validator address, which is convenient for
+	// a development chain and wrong for a real one.
+	BLSKeys map[common.Address][]byte `json:"blsKeys,omitempty"`
 }
 
 // DefaultGenesis returns a development genesis with the given validators.
@@ -241,10 +245,21 @@ func (g *Genesis) ToBlock(store db.Database) (*core.Block, error) {
 				}
 			}
 			statedb.AddBalance(staking.StakingAddress, staking.MinDeposit)
+
+			// Genesis validators need an attestation key like any other, but
+			// there is no deposit transaction to carry one. Deriving it from
+			// the validator address keeps genesis reproducible from the
+			// specification alone; a real deployment would list the keys.
+			blsKey := g.BLSKeys[validator]
+			if len(blsKey) == 0 {
+				blsKey = staking.DeriveGenesisBLSKey(validator).PublicKey().Bytes()
+			}
+
 			v, err := manager.Deposit(validator, withdrawal, staking.MinDeposit, 0)
 			if err != nil {
 				return nil, fmt.Errorf("chain: staking genesis validator %s: %w", validator, err)
 			}
+			v.BLSPublicKey = blsKey
 			// Genesis validators are active from the first block; there is no
 			// earlier epoch for them to have queued in.
 			v.Status = staking.StatusActive

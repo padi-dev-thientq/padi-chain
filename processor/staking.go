@@ -7,6 +7,7 @@ import (
 
 	"layer1/common"
 	"layer1/core"
+	"layer1/crypto/bls12381"
 	"layer1/rlp"
 	"layer1/staking"
 	"layer1/state"
@@ -25,6 +26,11 @@ const (
 	OpSlash    byte = 0x04 // 0x04 || RLP equivocation evidence
 )
 
+// depositWithKeyLength is the call data length of a deposit that registers an
+// attestation key: the selector, the withdrawal address, the key and its proof
+// of possession.
+const depositWithKeyLength = 1 + 20 + staking.BLSPublicKeyLength + 96
+
 // Gas charged for staking operations, on top of the intrinsic cost. These are
 // priced as expensive storage writes because that is what they are.
 const (
@@ -32,6 +38,9 @@ const (
 	GasExit     uint64 = 30000
 	GasWithdraw uint64 = 30000
 	GasSlash    uint64 = 80000
+	// Registering an attestation key costs far more than a plain deposit: it
+	// verifies a proof of possession, which is two pairings.
+	GasDepositWithKey uint64 = 250000
 )
 
 var (
@@ -56,18 +65,28 @@ func (st *StateTransition) applyStakingCall(epoch uint64) (uint64, error) {
 
 	switch data[0] {
 	case OpDeposit:
-		if len(data) < 21 {
-			return 0, fmt.Errorf("%w: a deposit needs a withdrawal address", ErrMalformedStaking)
-		}
 		if st.msg.Value.Sign() <= 0 {
 			return 0, fmt.Errorf("%w: a deposit needs value", ErrMalformedStaking)
 		}
-		withdrawal := common.BytesToAddress(data[1:21])
-		// The value has already moved to the staking account; this records the
-		// claim on it. A validator stakes for itself: the sender is the key
-		// that will sign blocks and attestations.
-		if _, err := manager.Deposit(st.msg.From, withdrawal, st.msg.Value, epoch); err != nil {
-			return 0, err
+		switch {
+		case len(data) >= depositWithKeyLength:
+			// 0x01 || withdrawal(20) || blsKey(48) || possession(96)
+			withdrawal := common.BytesToAddress(data[1:21])
+			blsKey := data[21 : 21+staking.BLSPublicKeyLength]
+			possession := data[21+staking.BLSPublicKeyLength : depositWithKeyLength]
+			if _, err := manager.DepositWithKey(st.msg.From, withdrawal, blsKey, possession, st.msg.Value, epoch); err != nil {
+				return 0, err
+			}
+			return GasDepositWithKey, nil
+		case len(data) >= 21:
+			// A top-up, which does not carry a key: the validator already has
+			// one and changing it silently would let it disown its own votes.
+			withdrawal := common.BytesToAddress(data[1:21])
+			if _, err := manager.Deposit(st.msg.From, withdrawal, st.msg.Value, epoch); err != nil {
+				return 0, err
+			}
+		default:
+			return 0, fmt.Errorf("%w: a deposit needs a withdrawal address", ErrMalformedStaking)
 		}
 		return GasDeposit, nil
 
@@ -91,12 +110,21 @@ func (st *StateTransition) applyStakingCall(epoch uint64) (uint64, error) {
 		if err := rlp.Decode(data[1:], &evidence); err != nil {
 			return 0, fmt.Errorf("%w: %v", ErrMalformedStaking, err)
 		}
-		// The proof is re-verified from the signatures rather than believed.
-		// Anyone may report; nobody may forge.
-		if err := evidence.Verify(st.evm.ChainConfig.ChainID); err != nil {
+		// The proof is re-verified from the signatures rather than believed:
+		// anyone may report, nobody may forge. The key comes from the registry
+		// so the evidence cannot name a validator it did not implicate.
+		accused, err := manager.Registry().Get(evidence.Index)
+		if err != nil {
 			return 0, fmt.Errorf("processor: equivocation evidence: %w", err)
 		}
-		if _, _, err := manager.Slash(evidence.Validator, epoch); err != nil {
+		key, err := bls12381.PublicKeyFromBytes(accused.BLSPublicKey)
+		if err != nil {
+			return 0, fmt.Errorf("processor: accused validator has no usable key: %w", err)
+		}
+		if err := evidence.Verify(st.evm.ChainConfig.ChainID, key); err != nil {
+			return 0, fmt.Errorf("processor: equivocation evidence: %w", err)
+		}
+		if _, _, err := manager.Slash(accused.Address, epoch); err != nil {
 			return 0, err
 		}
 		return GasSlash, nil
@@ -112,7 +140,7 @@ func (st *StateTransition) applyStakingCall(epoch uint64) (uint64, error) {
 // Participation is read off the chain rather than reported by anyone: a
 // validator's reward depends on a signature it actually produced, which is not
 // something a proposer can grant or withhold at will.
-func EpochParticipation(chain ChainContext, chainID *big.Int, epoch uint64) *staking.Participation {
+func EpochParticipation(chain ChainContext, chainID *big.Int, epoch uint64, validators []common.Address) *staking.Participation {
 	participation := staking.NewParticipation()
 	if epoch == 0 {
 		return participation
@@ -132,17 +160,13 @@ func EpochParticipation(chain ChainContext, chainID *big.Int, epoch uint64) *sta
 		if err != nil || qc.IsEmpty() {
 			continue
 		}
-		for _, signature := range qc.Signatures {
-			attestation := &core.Attestation{
-				Number:    qc.Number,
-				BlockHash: qc.BlockHash,
-				Signature: signature,
+		// The bitfield names the signers by their index in the set that
+		// governed the certificate's height, so participation is read straight
+		// off it — no signature recovery, and nothing a proposer can influence.
+		for _, index := range qc.Signers.Indices(len(validators)) {
+			if index < len(validators) {
+				participation.MarkAttested(validators[index])
 			}
-			attester, err := attestation.Attester(chainID)
-			if err != nil {
-				continue
-			}
-			participation.MarkAttested(attester)
 		}
 	}
 	return participation
@@ -159,8 +183,24 @@ func (p *Processor) ProcessEpochBoundary(statedb *state.StateDB, header *core.He
 	epoch := staking.EpochOf(number)
 
 	// The epoch that just ended is the one being rewarded.
-	participation := EpochParticipation(p.chain, p.config.ChainID, epoch-1)
+	validators, err := p.validatorsAt(staking.EpochStart(epoch - 1))
+	if err != nil {
+		return nil, err
+	}
+	participation := EpochParticipation(p.chain, p.config.ChainID, epoch-1, validators)
 
 	manager := staking.NewManager(statedb)
 	return manager.ProcessEpoch(epoch, participation, staking.EpochOf(finalizedNumber))
+}
+
+// validatorsAt returns the ordered validator set governing a height, which is
+// what an aggregate's bitfield indexes into.
+func (p *Processor) validatorsAt(blockNumber uint64) ([]common.Address, error) {
+	provider, ok := p.chain.(interface {
+		ValidatorsAt(uint64) ([]common.Address, error)
+	})
+	if !ok {
+		return nil, nil
+	}
+	return provider.ValidatorsAt(blockNumber)
 }

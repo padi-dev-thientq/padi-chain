@@ -9,6 +9,7 @@ import (
 	"layer1/common"
 	"layer1/core"
 	"layer1/node"
+	"layer1/staking"
 )
 
 func TestSnapshotSync(t *testing.T) {
@@ -135,7 +136,13 @@ func TestSnapshotOfferWithBadCertificateIsRefused(t *testing.T) {
 		StateRoot:  common.Keccak256([]byte("a state that does not exist")),
 	}
 	block := core.NewBlockWithHeader(header)
-	qc := &core.QuorumCert{Number: 500, BlockHash: block.Hash(), Signatures: [][]byte{make([]byte, 65)}}
+	qc := &core.QuorumCert{
+		Number:    500,
+		BlockHash: block.Hash(),
+		Signers:   core.NewBitfield(1),
+		Signature: make([]byte, 96),
+	}
+	qc.Signers.Set(0)
 
 	n.HandleSnapshot(block, qc)
 
@@ -205,14 +212,13 @@ func TestImportSnapshotRequiresPresentState(t *testing.T) {
 	}
 	block := core.NewBlockWithHeader(header)
 
-	attestation, err := core.SignAttestation(keys[0], testChainID, block.NumberU64(), block.Hash())
+	secret := staking.DeriveGenesisBLSKey(addrs[0])
+	votes := map[int][]byte{0: core.SignAttestationBLS(secret, testChainID, block.NumberU64(), block.Hash())}
+	qc, err := core.NewQuorumCert(block.NumberU64(), block.Hash(), 1, votes)
 	if err != nil {
 		t.Fatal(err)
 	}
-	qc, err := core.NewQuorumCert(block.NumberU64(), block.Hash(), []*core.Attestation{attestation})
-	if err != nil {
-		t.Fatal(err)
-	}
+	_ = keys
 
 	if err := n.Chain().ImportSnapshot(block, qc); err == nil {
 		t.Fatal("a snapshot whose state is missing was adopted")
